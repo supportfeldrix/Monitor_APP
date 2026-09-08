@@ -1,0 +1,19 @@
+{
+  "monitors": [
+    {
+      "name": "Jenkins HTTPS",
+      "url": "https://frm-rbautodev01:8443",
+      "interval": 60
+    },
+    {
+      "name": "Jenkins HTTP",
+      "url": "http://localhost:8080",
+      "interval": 60
+    },
+    {
+      "name": "Google (connectivity test)",
+      "url": "https://www.google.com",
+      "interval": 120
+    }
+  ]
+}

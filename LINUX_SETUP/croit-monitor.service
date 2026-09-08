@@ -1,0 +1,38 @@
+[Unit]
+Description=CROIT Uptime Monitoring
+Documentation=https://frm-rbautodev01/monitor/
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=f5151422
+Group=f5151422
+WorkingDirectory=/opt/croit-monitor
+
+# Load secret key from file into environment
+EnvironmentFile=-/opt/croit-monitor/app.env
+Environment="PYTHONIOENCODING=utf-8"
+Environment="PYTHONUNBUFFERED=1"
+
+# Use gunicorn for production — 4 worker processes
+ExecStart=/opt/croit-monitor/venv/bin/gunicorn \
+    --workers 4 \
+    --worker-class sync \
+    --bind 127.0.0.1:5000 \
+    --timeout 120 \
+    --keep-alive 5 \
+    --access-logfile /opt/croit-monitor/logs/access.log \
+    --error-logfile /opt/croit-monitor/logs/error.log \
+    --log-level info \
+    app:app
+
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

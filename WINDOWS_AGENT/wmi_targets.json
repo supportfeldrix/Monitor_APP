@@ -1,0 +1,8 @@
+[
+  {
+    "host":     "172.20.0.24",
+    "user":     "DOMAIN\\F5151422",
+    "password": "YOUR_PASSWORD_HERE",
+    "token":    "e1592afeb81ba71424de5509781cde2b9b605c4b07400fa05deefd5eceb1a30d"
+  }
+]

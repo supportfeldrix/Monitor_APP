@@ -1,0 +1,61 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# CROIT Monitor — Linux Agent via Ansible (SSH Pull-Based)
+# ═══════════════════════════════════════════════════════════════════════════════
+# For servers where you can't install the agent or add crontab entries.
+# Pulls metrics via SSH and posts to the local CROIT Monitor API.
+#
+# Usage:
+#   ansible-playbook ansible_linux_agent.yml -i inventory_linux.ini
+#
+# Crontab (every 5 min on the ansible control node):
+#   */5 * * * * ansible-playbook /home/ansible/CRO-IT/playbooks/cro_monitor/ansible_linux_agent.yml -i /home/ansible/CRO-IT/playbooks/cro_monitor/inventory_linux.ini >> /opt/podman/croit-monitor/logs/linux-agent-ansible.log 2>&1
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: CROIT Linux Agent - Collect metrics via SSH
+  hosts: linux_servers
+  gather_facts: no
+  strategy: free
+  vars:
+    croit_api_url: "https://localhost:9443"
+    # Each host must define croit_token in the inventory
+    croit_agent_token: "{{ croit_token }}"
+    script_path_remote: "/tmp/croit_collect_metrics.sh"
+    script_path_local: "/home/ansible/CRO-IT/playbooks/cro_monitor/collect_metrics_linux.sh"
+
+  tasks:
+    - name: Copy metrics collection script
+      copy:
+        src: "{{ script_path_local }}"
+        dest: "{{ script_path_remote }}"
+        mode: '0755'
+
+    - name: Run metrics collection script
+      shell: "bash {{ script_path_remote }}"
+      register: metrics_json
+
+    - name: Save metrics to temp file
+      delegate_to: localhost
+      copy:
+        content: "{{ metrics_json.stdout }}"
+        dest: "/tmp/croit_linux_metrics_{{ inventory_hostname }}.json"
+        mode: '0600'
+
+    - name: Post metrics to CROIT Monitor API
+      delegate_to: localhost
+      shell: >
+        curl -sk -X POST "{{ croit_api_url }}/api/agent/heartbeat"
+        -H "Authorization: Bearer {{ croit_agent_token }}"
+        -H "Content-Type: application/json"
+        -d @/tmp/croit_linux_metrics_{{ inventory_hostname }}.json
+      register: post_result
+
+    - name: Clean up temp file
+      delegate_to: localhost
+      file:
+        path: "/tmp/croit_linux_metrics_{{ inventory_hostname }}.json"
+        state: absent
+
+    - name: Show result
+      debug:
+        msg: "{{ inventory_hostname }} — {{ post_result.stdout }}"

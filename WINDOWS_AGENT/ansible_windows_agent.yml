@@ -1,0 +1,73 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# CROIT Monitor — Windows Agent via Ansible (WinRM Pull-Based)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Usage:
+#   ansible-playbook ansible_windows_agent.yml -i /home/ansible/CRO-IT/inventories/fircosoft_win.ini
+#
+# Crontab (every 5 min):
+#   */5 * * * * ansible-playbook /opt/podman/croit-monitor/WINDOWS_AGENT/ansible_windows_agent.yml -i /home/ansible/CRO-IT/inventories/fircosoft_win.ini >> /opt/podman/croit-monitor/logs/windows-agent-ansible.log 2>&1
+# ═══════════════════════════════════════════════════════════════════════════════
+
+- name: CROIT Windows Agent - Collect metrics via WinRM
+  hosts: windows_uat
+  gather_facts: no
+  vars:
+    croit_api_url: "https://localhost:9443"
+    croit_agent_token: "REPLACE_WITH_YOUR_WINDOWS_SERVER_TOKEN"
+    script_path_remote: "C:\\Temp\\croit_collect_metrics.ps1"
+    script_path_local: "/opt/podman/croit-monitor/WINDOWS_AGENT/collect_metrics.ps1"
+
+  tasks:
+    - name: Ensure Temp directory exists
+      win_file:
+        path: C:\Temp
+        state: directory
+
+    - name: Copy metrics collection script
+      win_copy:
+        src: "{{ script_path_local }}"
+        dest: "{{ script_path_remote }}"
+
+    - name: Run metrics collection script
+      win_shell: "powershell -ExecutionPolicy Bypass -File {{ script_path_remote }}"
+      register: metrics_json
+
+    - name: Debug - show first 200 chars of metrics
+      debug:
+        msg: "{{ metrics_json.stdout[:200] }}"
+
+    - name: Write metrics JSON to temp file
+      delegate_to: localhost
+      copy:
+        content: "{{ metrics_json.stdout }}"
+        dest: /tmp/croit_win_metrics.json
+        mode: '0600'
+
+    - name: Verify temp file content
+      delegate_to: localhost
+      shell: "head -c 200 /tmp/croit_win_metrics.json"
+      register: file_check
+
+    - name: Debug - show file content
+      debug:
+        msg: "{{ file_check.stdout }}"
+
+    - name: Post metrics to CROIT Monitor API
+      delegate_to: localhost
+      shell: >
+        curl -sk -X POST "{{ croit_api_url }}/api/agent/heartbeat"
+        -H "Authorization: Bearer {{ croit_agent_token }}"
+        -H "Content-Type: application/json"
+        -d @/tmp/croit_win_metrics.json
+      register: post_result
+
+    - name: Clean up temp file
+      delegate_to: localhost
+      file:
+        path: /tmp/croit_win_metrics.json
+        state: absent
+
+    - name: Show result
+      debug:
+        msg: "Posted metrics — {{ post_result.stdout }}"

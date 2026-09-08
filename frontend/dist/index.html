@@ -1,0 +1,1771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>CROIT Uptime Monitoring</title>
+<link rel="icon" type="image/png" href="/logo/fnb-logo.png"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f4f6f8;
+  --sidebar-bg:#ffffff;
+  --surface:#ffffff;
+  --surface2:#f0f2f5;
+  --border:#dde1e7;
+  --border2:#eaecef;
+  --text:#1a1f2e;
+  --text2:#4a5568;
+  --text3:#8a94a6;
+  --green:#1a9e5c;
+  --green-dim:rgba(26,158,92,.12);
+  --red:#e53e3e;
+  --red-dim:rgba(229,62,62,.1);
+  --yellow:#d97706;
+  --yellow-dim:rgba(217,119,6,.1);
+  --blue:#2b7de9;
+  --blue-dim:rgba(43,125,233,.1);
+  --accent:#00a99d;
+  --accent-hover:#008f84;
+  --fnb-teal:#00a99d;
+  --fnb-orange:#f7941d;
+  --radius:8px;
+  --sidebar-w:260px;
+  --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05);
+  --shadow-md:0 4px 16px rgba(0,0,0,.1);
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;display:flex;min-height:100vh}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* TOP ACCENT BAR */
+body::before{content:'';display:block;position:fixed;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--fnb-teal) 0%,var(--fnb-orange) 100%);z-index:9999}
+
+/* SIDEBAR */
+#sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;position:sticky;top:0;overflow-y:auto;z-index:100;box-shadow:2px 0 8px rgba(0,0,0,.04)}
+.sidebar-logo{padding:16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);text-decoration:none;cursor:pointer;background:var(--sidebar-bg)}
+.sidebar-logo img{width:44px;height:auto;flex-shrink:0}
+.sidebar-logo .logo-text{display:flex;flex-direction:column;line-height:1.25}
+.sidebar-logo .logo-title{font-size:13px;font-weight:800;color:var(--text);letter-spacing:.01em}
+.sidebar-logo .logo-sub{font-size:10px;color:var(--text3);font-weight:500;letter-spacing:.03em}
+.sidebar-logo .version{font-size:10px;color:var(--text3);margin-left:auto;background:var(--surface2);padding:2px 7px;border-radius:10px;border:1px solid var(--border);white-space:nowrap}
+
+.sidebar-section{padding:6px 0}
+.sidebar-section-title{padding:8px 16px 4px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;color:var(--text2);font-size:13px;border-left:3px solid transparent;transition:all .15s;user-select:none}
+.sidebar-item:hover{background:var(--surface2);color:var(--text)}
+.sidebar-item.active{background:#e6f7f6;color:var(--fnb-teal);border-left-color:var(--fnb-teal);font-weight:600}
+.sidebar-item .si-icon{width:18px;height:18px;flex-shrink:0;opacity:.7}
+.sidebar-item.active .si-icon{opacity:1}
+.sidebar-item:hover .si-icon{opacity:1}
+
+.sidebar-monitor-list{overflow-y:auto;flex:1}
+.sidebar-monitor-item{display:flex;align-items:center;gap:8px;padding:6px 16px 6px 28px;cursor:pointer;color:var(--text2);font-size:12px;transition:background .15s}
+.sidebar-monitor-item:hover{background:var(--surface2);color:var(--text)}
+.sidebar-monitor-item.active{background:#e6f7f6;color:var(--fnb-teal);font-weight:600}
+
+/* STATUS DOTS - no animation, solid professional */
+.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;display:inline-block}
+.dot.up{background:var(--green)}
+.dot.down{background:var(--red)}
+.dot.pending{background:var(--yellow)}
+.dot.paused{background:var(--text3)}
+
+.sidebar-footer{padding:12px 16px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)}
+
+/* MAIN */
+#main{flex:1;display:flex;flex-direction:column;min-width:0;overflow-y:auto}
+.topbar{background:var(--sidebar-bg);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:50;box-shadow:var(--shadow)}
+.topbar h2{font-size:15px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px}
+.topbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.page{display:none;padding:24px;animation:fadeIn .2s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:var(--radius);font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all .15s;text-decoration:none;white-space:nowrap}
+.btn svg{width:14px;height:14px;flex-shrink:0}
+.btn-primary{background:var(--fnb-teal);border-color:var(--fnb-teal);color:#fff;box-shadow:0 1px 4px rgba(0,169,157,.25)}
+.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn-secondary{background:var(--surface);border-color:var(--border);color:var(--text2);box-shadow:var(--shadow)}
+.btn-secondary:hover{background:var(--surface2);border-color:var(--text3);color:var(--text)}
+.btn-danger{background:var(--red-dim);border-color:var(--red);color:var(--red)}
+.btn-danger:hover{background:var(--red);color:#fff}
+.btn-warning{background:var(--yellow-dim);border-color:var(--yellow);color:var(--yellow)}
+.btn-warning:hover{background:var(--yellow);color:#fff}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-icon{padding:6px 8px}
+
+/* CARDS */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+.card-header{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface2)}
+.card-header h3{font-size:13px;font-weight:700;color:var(--text)}
+.card-body{padding:18px}
+
+/* FORMS */
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:11px;font-weight:700;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
+.form-control{width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;box-shadow:var(--shadow)}
+.form-control:focus{border-color:var(--fnb-teal);box-shadow:0 0 0 3px rgba(0,169,157,.12)}
+.form-control::placeholder{color:var(--text3)}
+select.form-control option{background:var(--surface)}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+.form-hint{font-size:11px;color:var(--text3);margin-top:4px}
+.form-check{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)}
+.form-check input[type=checkbox]{width:15px;height:15px;accent-color:var(--fnb-teal);cursor:pointer}
+
+/* BADGES */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.badge svg{width:7px;height:7px;flex-shrink:0}
+.badge-up{background:var(--green-dim);color:var(--green)}
+.badge-down{background:var(--red-dim);color:var(--red)}
+.badge-pending{background:var(--yellow-dim);color:var(--yellow)}
+.badge-paused{background:var(--surface2);color:var(--text3);border:1px solid var(--border)}
+
+/* PATCH STATUS BADGES */
+.badge-green{background:#22c55e;color:#fff}
+.badge-amber{background:#f59e0b;color:#fff}
+.badge-red{background:#ef4444;color:#fff}
+.badge-grey{background:#6b7280;color:#fff}
+.badge-reboot{margin-left:4px}
+.badge-count{font-size:11px;color:var(--text2);margin-left:4px;font-weight:600}
+.patch-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:4px;font-size:11px}
+
+/* MONITOR CARD */
+.monitor-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;cursor:pointer;transition:all .15s;margin-bottom:8px;box-shadow:var(--shadow)}
+.monitor-card:hover{border-color:var(--fnb-teal);box-shadow:0 4px 12px rgba(0,169,157,.12);transform:translateY(-1px)}
+.monitor-card.selected{border-color:var(--fnb-teal);box-shadow:0 0 0 2px rgba(0,169,157,.18)}
+.mc-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.mc-name{font-size:14px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.mc-url{font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mc-meta{display:flex;gap:20px;margin-bottom:10px;flex-wrap:wrap}
+.mc-stat{text-align:center}
+.mc-stat .val{font-size:16px;font-weight:700;line-height:1}
+.mc-stat .lbl{font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:2px}
+.val-green{color:var(--green)}.val-red{color:var(--red)}.val-yellow{color:var(--yellow)}.val-blue{color:var(--blue)}
+
+/* HEARTBEAT BARS */
+.hb-bars{display:flex;gap:2px;align-items:flex-end;height:32px;margin-top:8px}
+.hb-bar{flex:1;border-radius:3px;min-width:3px;cursor:default;position:relative}
+.hb-bar.up{background:var(--green);height:100%}
+.hb-bar.down{background:var(--red);height:100%}
+.hb-bar.nodata{background:var(--border);height:40%}
+.hb-bar:hover{opacity:.7}
+.hb-bar:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100%+6px);left:50%;transform:translateX(-50%);background:var(--text);color:#fff;font-size:10px;padding:3px 7px;border-radius:4px;white-space:nowrap;pointer-events:none;z-index:999}
+.hb-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-top:3px}
+
+/* DETAIL PANEL */
+.detail-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)}
+.detail-header{display:flex;align-items:flex-start;gap:12px;margin-bottom:20px}
+.detail-icon{width:36px;height:36px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.detail-icon svg{width:20px;height:20px}
+.detail-title h2{font-size:1rem;font-weight:700;color:var(--text)}
+.detail-title .url{font-size:12px;color:var(--text3)}
+.detail-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px}
+.stat-box{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;text-align:center}
+.stat-box .sv{font-size:1.4rem;font-weight:700;line-height:1}
+.stat-box .sl{font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px}
+
+/* TIMEFRAME BAR */
+.tf-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:16px;box-shadow:var(--shadow)}
+.tf-bar label{font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;white-space:nowrap}
+.tf-presets{display:flex;gap:4px;flex-wrap:wrap}
+.tf-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:5px 13px;border-radius:20px;font-size:12px;cursor:pointer;transition:all .15s;font-weight:500}
+.tf-btn:hover{border-color:var(--fnb-teal);color:var(--fnb-teal)}
+.tf-btn.active{background:var(--fnb-teal);border-color:var(--fnb-teal);color:#fff;font-weight:600}
+.tf-custom{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
+.tf-custom input[type=datetime-local]{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:var(--radius);font-size:12px;outline:none;box-shadow:var(--shadow);cursor:pointer;transition:border-color .15s}
+.tf-custom input[type=datetime-local]:focus{border-color:var(--fnb-teal);box-shadow:0 0 0 3px rgba(0,169,157,.12)}
+.tf-sep{color:var(--text3);font-size:12px}
+
+/* TABLES */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:10px 14px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--border);white-space:nowrap;background:var(--surface2)}
+td{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border2);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#f5fffe}
+
+/* MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(26,31,46,.45);z-index:1000;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(3px)}
+.modal-overlay.open{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;animation:modalIn .2s ease;box-shadow:var(--shadow-md)}
+@keyframes modalIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+.modal-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border-radius:12px 12px 0 0}
+.modal-header h3{font-size:14px;font-weight:700;color:var(--text)}
+.modal-close{background:none;border:1px solid var(--border);color:var(--text3);font-size:16px;cursor:pointer;padding:2px 8px;border-radius:6px;line-height:1.4;transition:all .15s}
+.modal-close:hover{background:var(--border);color:var(--text)}
+.modal-body{padding:20px}
+.modal-footer{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;background:var(--surface2);border-radius:0 0 12px 12px}
+
+/* TOAST */
+#toast-container{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:13px;min-width:240px;max-width:360px;display:flex;align-items:center;gap:10px;animation:toastIn .3s ease;box-shadow:var(--shadow-md)}
+.toast.success{border-left:4px solid var(--green)}
+.toast.error{border-left:4px solid var(--red)}
+.toast.info{border-left:4px solid var(--blue)}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+
+/* STATUS PAGE PUBLIC VIEW */
+#status-page-view{display:none;min-height:100vh;background:var(--bg);width:100%}
+#status-page-view.open{display:block}
+.sp-header{background:var(--sidebar-bg);border-bottom:1px solid var(--border);padding:28px 24px;text-align:center;box-shadow:var(--shadow);width:100%}
+.sp-header-inner{max-width:1100px;margin:0 auto}
+.sp-logo-row{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px}
+.sp-logo-row img{height:52px;width:auto}
+.sp-logo-text{text-align:left}
+.sp-logo-text .sp-brand{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.12em}
+.sp-logo-text .sp-name{font-size:20px;font-weight:800;color:var(--text)}
+.sp-header h1{font-size:1.5rem;font-weight:700;margin-bottom:6px;color:var(--text)}
+.sp-header p{color:var(--text2);font-size:14px}
+.sp-overall{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 0;padding:10px 22px;border-radius:var(--radius);font-size:13px;font-weight:600}
+.sp-overall.all-up{background:var(--green-dim);color:var(--green);border:1px solid rgba(26,158,92,.25)}
+.sp-overall.has-down{background:var(--red-dim);color:var(--red);border:1px solid rgba(229,62,62,.25)}
+.sp-content{max-width:1100px;margin:0 auto;padding:28px 20px;width:100%}
+.sp-monitor{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:12px;box-shadow:var(--shadow)}
+.sp-monitor-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sp-monitor-name{font-size:14px;font-weight:600;color:var(--text)}
+.sp-footer{text-align:center;padding:20px;color:var(--text3);font-size:12px;border-top:1px solid var(--border);margin-top:8px}
+/* Charts */
+.sp-chart-section{margin-top:12px;padding-top:12px;border-top:1px solid var(--border2)}
+canvas{max-width:100%}
+/* Detail panel */
+.sp-detail-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;margin-top:16px}
+.sp-detail-header{background:var(--surface2);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.sp-detail-body{padding:20px}
+/* Tile grid layout */
+.sp-group{margin-bottom:28px}
+.sp-group-header{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:2px solid var(--border);margin-bottom:14px}
+.sp-group-name{font-size:12px;font-weight:800;color:var(--text);text-transform:uppercase;letter-spacing:.08em}
+.sp-tile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;align-items:stretch}
+.sp-tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px 14px 16px;box-shadow:var(--shadow);transition:box-shadow .15s,transform .15s;display:flex;flex-direction:column;min-width:0;width:100%}
+.sp-tile:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.sp-tile-header{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+.sp-tile-name{font-size:13px;font-weight:700;color:var(--text);flex:1;overflow:visible;white-space:normal;word-break:break-word}
+.sp-tile-badge{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:10px;white-space:nowrap;flex-shrink:0}
+.sp-tile-url{font-size:10px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:10px;word-break:break-all}
+.sp-tile-stats{display:flex;gap:0;margin-bottom:12px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.sp-tile-stat{flex:1;text-align:center;padding:8px 4px;border-right:1px solid var(--border)}
+.sp-tile-stat:last-child{border-right:none}
+.sp-tile-val{font-size:14px;font-weight:700;line-height:1}
+.sp-tile-lbl{font-size:9px;color:var(--text3);text-transform:uppercase;margin-top:3px;letter-spacing:.04em}
+.sp-tile-bars{margin-top:auto}
+.sp-tile-bars .hb-bars{height:24px;margin-top:0;gap:3px;width:100%;box-sizing:border-box;overflow:hidden}
+.sp-tile-bars .hb-bar{border-radius:3px;min-width:0}
+.sp-tile-bars .hb-labels{font-size:9px;margin-top:4px;padding:0}
+
+/* MISC */
+.empty-state{text-align:center;padding:48px 20px;color:var(--text3)}
+.empty-state .es-icon{width:48px;height:48px;margin:0 auto 16px;opacity:.4}
+.empty-state p{font-size:14px;margin-bottom:16px}
+.spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--fnb-teal);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-center{display:flex;align-items:center;justify-content:center;padding:48px;gap:10px;color:var(--text3)}
+.divider{border:none;border-top:1px solid var(--border);margin:16px 0}
+.text-muted{color:var(--text3)}.text-green{color:var(--green)}.text-red{color:var(--red)}
+.flex{display:flex}.items-center{align-items:center}.gap-2{gap:8px}.ml-auto{margin-left:auto}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){#sidebar{display:none}.grid-2{grid-template-columns:1fr}}
+.tag{display:inline-block;background:var(--surface2);border:1px solid var(--border);color:var(--text2);font-size:11px;padding:1px 7px;border-radius:10px;margin:2px}
+</style>
+</head>
+<body>
+<!-- SVG ICON DEFINITIONS (reusable) -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="ic-dashboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+  </symbol>
+  <symbol id="ic-pages" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+  </symbol>
+  <symbol id="ic-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </symbol>
+  <symbol id="ic-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+  </symbol>
+  <symbol id="ic-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+  </symbol>
+  <symbol id="ic-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+  </symbol>
+  <symbol id="ic-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+  </symbol>
+  <symbol id="ic-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="5 3 19 12 5 21 5 3"/>
+  </symbol>
+  <symbol id="ic-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+  </symbol>
+  <symbol id="ic-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+  </symbol>
+  <symbol id="ic-http" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+  </symbol>
+  <symbol id="ic-tcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+  </symbol>
+  <symbol id="ic-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+  </symbol>
+  <symbol id="ic-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+  </symbol>
+  <symbol id="ic-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+  </symbol>
+  <symbol id="ic-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+  </symbol>
+  <symbol id="ic-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+  </symbol>
+  <symbol id="ic-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+  </symbol>
+  <symbol id="ic-select" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="9 18 15 12 9 6"/>
+  </symbol>
+</svg>
+
+<!-- STATUS PAGE PUBLIC VIEW -->
+<div id="status-page-view" style="display:none">
+  <div class="sp-header">
+    <div class="sp-header-inner">
+      <div class="sp-logo-row">
+        <img src="/logo/fnb-logo.png" alt="FNB Logo"/>
+        <div class="sp-logo-text">
+          <div class="sp-brand">CROIT</div>
+          <div class="sp-name">Uptime Monitoring</div>
+        </div>
+      </div>
+      <h1 id="sp-title">System Status</h1>
+      <p id="sp-desc"></p>
+      <div id="sp-overall" class="sp-overall all-up">
+        <svg width="14" height="14"><use href="#ic-check-circle"/></svg>
+
+<!-- DB STATUS PUBLIC VIEW -->
+<div id="db-status-view" style="display:none;min-height:100vh;background:var(--bg);width:100%">
+  <div class="sp-header">
+    <div class="sp-header-inner">
+      <div class="sp-logo-row">
+        <img src="/logo/fnb-logo.png" alt="FNB Logo"/>
+        <div class="sp-logo-text">
+          <div class="sp-brand">CROIT</div>
+          <div class="sp-name">Database Status</div>
+        </div>
+      </div>
+      <h1>Database Health</h1>
+      <p style="color:var(--text2);font-size:14px">Live status of all monitored database servers</p>
+      <div id="db-status-overall" class="sp-overall all-up" style="margin-top:14px">
+        <svg width="14" height="14"><use href="#ic-check-circle"/></svg>
+        <span id="db-status-overall-text">All Databases Operational</span>
+      </div>
+    </div>
+  </div>
+  <div style="max-width:1100px;margin:0 auto;padding:28px 20px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px;font-size:12px;color:var(--text3)">
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--green);display:inline-block"></span>Normal</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--red);display:inline-block"></span>Offline</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--text3);display:inline-block"></span>Paused</span>
+      <span style="margin-left:auto" id="db-status-updated"></span>
+    </div>
+    <div id="db-status-groups"></div>
+    <div class="sp-footer">Powered by CROIT Uptime Monitoring &nbsp;·&nbsp; Auto-refreshes every 60 seconds</div>
+  </div>
+</div>
+        All Systems Operational
+      </div>
+    </div>
+  </div>
+
+  <div class="sp-content">
+
+    <!-- Timeframe + Custom Range bar -->
+    <div class="tf-bar" style="margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <label>Timeframe:</label>
+      <div class="tf-presets" id="sp-tf-presets">
+        <button class="tf-btn" data-p="1h"  onclick="spSetPreset('1h')">1h</button>
+        <button class="tf-btn" data-p="3h"  onclick="spSetPreset('3h')">3h</button>
+        <button class="tf-btn" data-p="6h"  onclick="spSetPreset('6h')">6h</button>
+        <button class="tf-btn" data-p="9h"  onclick="spSetPreset('9h')">9h</button>
+        <button class="tf-btn active" data-p="24h" onclick="spSetPreset('24h')">24h</button>
+        <button class="tf-btn" data-p="7d"  onclick="spSetPreset('7d')">7 days</button>
+        <button class="tf-btn" data-p="30d" onclick="spSetPreset('30d')">30 days</button>
+        <button class="tf-btn" data-p="90d" onclick="spSetPreset('90d')">90 days</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto">
+        <input type="datetime-local" id="sp-from" title="Select start date and time"/>
+        <span class="tf-sep">to</span>
+        <input type="datetime-local" id="sp-to" title="Select end date and time"/>
+        <button class="btn btn-primary btn-sm" onclick="spApplyCustom()">Apply</button>
+        <button class="btn btn-secondary btn-sm" onclick="spClearCustom()" id="sp-clear-btn" style="display:none">Clear</button>
+      </div>
+    </div>
+
+    <!-- Service filter for custom date (hidden by default) -->
+    <div class="tf-bar" id="sp-custom-service-bar" style="margin-bottom:16px;display:none;flex-wrap:wrap;gap:8px">
+      <label>Filter Service:</label>
+      <select id="sp-custom-service" onchange="spCustomServiceChanged()"
+        style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 32px 6px 12px;border-radius:var(--radius);font-size:13px;font-weight:500;outline:none;cursor:pointer;box-shadow:var(--shadow);appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%238a94a6%22 stroke-width=%222%22><polyline points=%226 9 12 15 18 9%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;min-width:220px;flex:1;max-width:400px">
+        <option value="all">All Services</option>
+      </select>
+      <span style="font-size:11px;color:var(--text3);margin-left:auto">Select a service to view its custom date range data</span>
+    </div>
+
+    <!-- Monitor status cards (all services summary) -->
+    <div id="sp-monitors"></div>
+
+    <!-- Detail section: dropdown to pick one service for charts -->
+    <div class="sp-detail-panel" id="sp-detail-panel" style="display:none">
+      <div class="sp-detail-header">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <svg width="16" height="16" style="color:var(--fnb-teal)"><use href="#ic-http"/></svg>
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Response Time &amp; Outage Detail</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap">Chart Timeframe:</label>
+          <div class="tf-presets" id="chart-tf-presets">
+            <button class="tf-btn" data-p="1h"  onclick="chartSetPreset('1h')">1h</button>
+            <button class="tf-btn" data-p="3h"  onclick="chartSetPreset('3h')">3h</button>
+            <button class="tf-btn" data-p="6h"  onclick="chartSetPreset('6h')">6h</button>
+            <button class="tf-btn" data-p="9h"  onclick="chartSetPreset('9h')">9h</button>
+            <button class="tf-btn active" data-p="24h" onclick="chartSetPreset('24h')">24h</button>
+            <button class="tf-btn" data-p="7d"  onclick="chartSetPreset('7d')">7d</button>
+            <button class="tf-btn" data-p="30d" onclick="chartSetPreset('30d')">30d</button>
+          </div>
+          <input type="datetime-local" id="chart-from" title="From" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text)"/>
+          <span style="color:var(--text3);font-size:11px">to</span>
+          <input type="datetime-local" id="chart-to" title="To" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text)"/>
+          <button class="btn btn-primary btn-sm" onclick="chartApplyCustom()">Apply</button>
+          <button class="btn btn-secondary btn-sm" onclick="chartClearCustom()" id="chart-clear-btn" style="display:none">Clear</button>
+          <span style="color:var(--border);margin:0 4px">|</span>
+          <label style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap">Select Service:</label>
+          <select id="sp-detail-select" onchange="spDetailChanged()"
+            style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 32px 6px 12px;border-radius:var(--radius);font-size:13px;font-weight:500;outline:none;cursor:pointer;box-shadow:var(--shadow);appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%238a94a6%22 stroke-width=%222%22><polyline points=%226 9 12 15 18 9%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;min-width:200px">
+            <option value="">-- Select a service --</option>
+          </select>
+        </div>
+      </div>
+      <div class="sp-detail-body" id="sp-detail-body">
+        <div style="text-align:center;padding:32px;color:var(--text3)">
+          <svg style="width:40px;height:40px;margin:0 auto 12px;display:block;opacity:.3"><use href="#ic-select"/></svg>
+          <p style="font-size:13px">Select a service above to view its response time chart and outage history</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="sp-footer">Powered by CROIT Uptime Monitoring &nbsp;&middot;&nbsp; Auto-refreshes every 60 seconds</div>
+  </div>
+</div>
+
+<!-- MAIN APP SHELL -->
+<div id="app-shell" style="display:flex;width:100%;min-height:100vh">
+
+<nav id="sidebar">
+  <a class="sidebar-logo" href="#" onclick="navigate('dashboard');return false">
+    <img src="/logo/fnb-logo.png" alt="FNB"/>
+    <div class="logo-text">
+      <span class="logo-title">CROIT</span>
+      <span class="logo-sub">Uptime Monitoring</span>
+    </div>
+    <span class="version">v2.0</span>
+  </a>
+  <div class="sidebar-section">
+    <div class="sidebar-item active" id="nav-dashboard" onclick="navigate('dashboard')">
+      <svg class="si-icon"><use href="#ic-dashboard"/></svg> Dashboard
+    </div>
+    <div class="sidebar-item" id="nav-status-pages" onclick="navigate('status-pages')">
+      <svg class="si-icon"><use href="#ic-pages"/></svg> Status Pages
+    </div>
+    <div class="sidebar-item" id="nav-settings" onclick="navigate('settings')">
+      <svg class="si-icon"><use href="#ic-settings"/></svg> Settings
+    </div>
+    <div class="sidebar-item" id="nav-ssl" onclick="navigate('ssl')">
+      <svg class="si-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> SSL Certificates
+    </div>
+    <div class="sidebar-item" id="nav-topology" onclick="navigate('topology')">
+      <svg class="si-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg> Service Topology
+    </div>
+    <div class="sidebar-item" id="nav-databases" onclick="navigate('databases')">
+      <svg class="si-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> Databases
+    </div>
+    <div class="sidebar-item" id="nav-servers" onclick="navigate('servers')">
+      <svg class="si-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg> Server Inventory
+    </div>
+    <div class="sidebar-item" id="nav-software" onclick="navigate('software')">
+      <svg class="si-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="12" cy="10" r="3"/></svg> Software Inventory
+      <span id="nav-outdated-badge" style="display:none;margin-left:auto;background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px"></span>
+    </div>
+  </div>
+  <hr class="divider" style="margin:0"/>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Monitors</div>
+    <div id="sidebar-monitors" class="sidebar-monitor-list"></div>
+  </div>
+  <div class="sidebar-footer">
+    <div id="sb-summary">Loading...</div>
+    <div style="margin-top:4px" id="sb-refresh"></div>
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <span id="sb-username" style="font-size:11px;color:var(--text2);font-weight:600"></span>
+      <button onclick="doSignOut()" style="background:none;border:1px solid var(--border);color:var(--text3);font-size:11px;padding:3px 10px;border-radius:6px;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text3)'">Sign Out</button>
+    </div>
+  </div>
+</nav>
+
+<div id="main">
+
+  <!-- DASHBOARD -->
+  <div id="page-dashboard" class="page active">
+    <div class="topbar">
+      <h2><svg width="16" height="16" style="color:var(--fnb-teal)"><use href="#ic-monitor"/></svg> Dashboard</h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openAddMonitorModal()">
+          <svg><use href="#ic-plus"/></svg> Add Monitor
+        </button>
+        <button class="btn btn-secondary btn-icon" onclick="refreshDashboard()" title="Refresh">
+          <svg width="15" height="15"><use href="#ic-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+    <div style="padding:20px">
+      <div class="tf-bar" id="dash-tf">
+        <label>Period:</label>
+        <div class="tf-presets">
+          <button class="tf-btn" data-p="1h"  onclick="dashSetPreset('1h')">1h</button>
+          <button class="tf-btn" data-p="3h"  onclick="dashSetPreset('3h')">3h</button>
+          <button class="tf-btn" data-p="6h"  onclick="dashSetPreset('6h')">6h</button>
+          <button class="tf-btn" data-p="9h"  onclick="dashSetPreset('9h')">9h</button>
+          <button class="tf-btn active" data-p="24h" onclick="dashSetPreset('24h')">24h</button>
+          <button class="tf-btn" data-p="7d"  onclick="dashSetPreset('7d')">7d</button>
+          <button class="tf-btn" data-p="30d" onclick="dashSetPreset('30d')">30d</button>
+          <button class="tf-btn" data-p="90d" onclick="dashSetPreset('90d')">90d</button>
+        </div>
+        <div class="tf-custom">
+          <span class="tf-sep">Custom:</span>
+          <input type="datetime-local" id="dash-from" title="Select start date and time"/>
+          <span class="tf-sep">to</span>
+          <input type="datetime-local" id="dash-to" title="Select end date and time"/>
+          <button class="btn btn-primary btn-sm" onclick="dashApplyCustom()">Apply</button>
+        </div>
+        <span class="ml-auto" id="dash-last-update" style="font-size:11px;color:var(--text3)"></span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px">
+        <div class="stat-box"><div class="sv" id="ds-total">-</div><div class="sl">Total</div></div>
+        <div class="stat-box"><div class="sv val-green" id="ds-up">-</div><div class="sl">Up</div></div>
+        <div class="stat-box"><div class="sv val-red" id="ds-down">-</div><div class="sl">Down</div></div>
+        <div class="stat-box"><div class="sv val-yellow" id="ds-paused">-</div><div class="sl">Paused</div></div>
+        <div class="stat-box"><div class="sv val-blue" id="ds-avg">-</div><div class="sl">Avg Uptime</div></div>
+      </div>
+      <div class="grid-2">
+        <div id="dash-monitor-list"><div class="loading-center"><div class="spinner"></div>&nbsp; Loading monitors...</div></div>
+        <div id="dash-detail">
+          <div class="detail-panel" style="text-align:center;padding:48px 20px;color:var(--text3)">
+            <svg class="es-icon" style="width:48px;height:48px;margin:0 auto 16px;display:block;opacity:.3"><use href="#ic-select"/></svg>
+            <p>Select a monitor to view details</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS PAGES -->
+  <div id="page-status-pages" class="page">
+    <div class="topbar">
+      <h2><svg width="16" height="16" style="color:var(--fnb-teal)"><use href="#ic-pages"/></svg> Status Pages</h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openCreatePageModal()">
+          <svg><use href="#ic-plus"/></svg> New Status Page
+        </button>
+      </div>
+    </div>
+    <div style="padding:20px">
+      <div id="status-pages-list"><div class="loading-center"><div class="spinner"></div>&nbsp; Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="page-settings" class="page">
+    <div class="topbar"><h2><svg width="16" height="16" style="color:var(--fnb-teal)"><use href="#ic-settings"/></svg> Settings</h2></div>
+    <div style="padding:20px;max-width:640px">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px"><use href="#ic-mail"/></svg>Email Notifications (SMTP)</h3>
+        </div>
+        <div class="card-body">
+          <div class="form-row">
+            <div class="form-group"><label>SMTP Host</label><input class="form-control" id="s-smtp-host" placeholder="mail.fnb.co.za"/></div>
+            <div class="form-group"><label>SMTP Port</label><input class="form-control" id="s-smtp-port" type="number" placeholder="25"/></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>From Address</label><input class="form-control" id="s-smtp-from" type="email" placeholder="monitor@fnb.co.za"/></div>
+            <div class="form-group"><label>Alert To Address</label><input class="form-control" id="s-smtp-to" type="email" placeholder="admin@fnb.co.za"/></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Username (optional)</label><input class="form-control" id="s-smtp-user" placeholder="Leave blank if not required"/></div>
+            <div class="form-group"><label>Password (optional)</label><input class="form-control" id="s-smtp-pass" type="password" placeholder="Leave blank if not required"/></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+            <button class="btn btn-secondary" onclick="testEmail()">Send Test Email</button>
+          </div>
+          <div id="settings-msg" style="margin-top:10px;font-size:13px"></div>
+        </div>
+      </div>
+      <!-- Notification Groups -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px"><use href="#ic-mail"/></svg>Notification Groups</h3>
+          <span style="font-size:11px;color:var(--text3)">Route different alert types to different recipients. Leave blank to use the default "Alert To" address above.</span>
+        </div>
+        <div class="card-body">
+          <div class="form-row">
+            <div class="form-group"><label>🌐 Monitor Alerts (DOWN/UP)</label><input class="form-control" id="s-smtp-to-monitors" placeholder="ops-team@fnb.co.za, oncall@fnb.co.za"/></div>
+            <div class="form-group"><label>🖥️ Server Alerts (CPU/RAM/Disk)</label><input class="form-control" id="s-smtp-to-servers" placeholder="infra-team@fnb.co.za"/></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>📦 Software Alerts (Outdated/EOL)</label><input class="form-control" id="s-smtp-to-software" placeholder="security-team@fnb.co.za"/></div>
+            <div class="form-group"><label>🛡️ Patch Alerts (Critical patches)</label><input class="form-control" id="s-smtp-to-patches" placeholder="infra-team@fnb.co.za"/></div>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:6px">💡 Separate multiple addresses with commas. If a group is empty, alerts go to the default "Alert To" address.</div>
+        </div>
+      </div>
+      <!-- User Management (admin only) -->
+      <div class="card" style="margin-bottom:16px" id="user-mgmt-card">
+        <div class="card-header">
+          <h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px"><use href="#ic-settings"/></svg>User Management</h3>
+          <button class="btn btn-primary btn-sm" onclick="openAddUserModal()">+ Add User</button>
+        </div>
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap">
+            <table id="users-table">
+              <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
+              <tbody id="users-tbody"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Maintenance Windows -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <h3>🛠️ Maintenance Windows</h3>
+          <button class="btn btn-primary btn-sm" onclick="openAddMaintenanceModal()">+ Schedule</button>
+        </div>
+        <div class="card-body" style="padding:0">
+          <div id="maintenance-table-wrap" class="table-wrap">
+            <div class="loading-center" style="padding:20px"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Weekly Report -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><h3>📊 Weekly Uptime Report</h3></div>
+        <div class="card-body">
+          <p style="color:var(--text2);font-size:13px;margin-bottom:16px;line-height:1.7">
+            An HTML uptime report is automatically emailed every <strong>Monday at 08:00 UTC</strong> to the alert address configured above. It includes uptime % and avg latency per service, grouped by application.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary" onclick="sendWeeklyReport()">Send Report Now</button>
+            <span id="report-msg" style="font-size:13px;color:var(--text3)"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Export / Import (admin only) -->
+      <div class="card" style="margin-bottom:16px" id="export-import-card">
+        <div class="card-header">
+          <h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export / Import</h3>
+        </div>
+        <div class="card-body">
+          <p style="color:var(--text2);font-size:13px;margin-bottom:16px;line-height:1.7">
+            <strong>Export</strong> saves all monitor configurations, status pages, settings, servers, software, and topology to a JSON file.<br>
+            <strong>Import</strong> restores from a previously exported backup file.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+            <button class="btn btn-primary" id="btn-export" onclick="doExportBackup()">📥 Export Backup</button>
+            <span id="export-msg" style="font-size:12px;color:var(--text3)"></span>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Select backup file (.json)</label>
+            <input type="file" id="import-file" accept=".json" style="font-size:12px" onchange="onImportFileSelected()">
+            <span id="import-filename" style="font-size:12px;color:var(--text3);margin-left:8px"></span>
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Import Mode</label>
+            <label style="font-size:12px;color:var(--text2);cursor:pointer;margin-right:16px"><input type="radio" name="import-mode" value="clean" checked> Clean Restore <span style="color:var(--text3)">(wipe &amp; replace all config)</span></label>
+            <label style="font-size:12px;color:var(--text2);cursor:pointer"><input type="radio" name="import-mode" value="merge"> Merge <span style="color:var(--text3)">(skip duplicates, add new)</span></label>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-danger" id="btn-import" onclick="doImportBackup()" disabled>📤 Import Backup</button>
+            <span id="import-msg" style="font-size:12px;color:var(--text3)"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px"><use href="#ic-info"/></svg>About</h3></div>
+        <div class="card-body" style="color:var(--text2);font-size:13px;line-height:1.9">
+          <p><strong>CROIT Uptime Monitoring v2.0</strong></p>
+          <p>Self-hosted monitoring with date/timeframe filtering on status pages.</p>
+          <p style="margin-top:8px">HTTP/HTTPS &middot; TCP Port &middot; Keyword &middot; Status Pages &middot; Email Alerts &middot; Timeframe Filtering</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SSL CERTIFICATES PAGE -->
+  <div id="page-ssl" class="page">
+    <div class="topbar">
+      <h2>
+        <svg width="16" height="16" style="color:var(--fnb-teal);vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        SSL Certificates
+      </h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="refreshSSL()">Refresh All</button>
+        <span id="ssl-last-check" style="font-size:11px;color:var(--text3)"></span>
+      </div>
+    </div>
+    <div style="padding:20px">
+
+      <!-- Summary cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px" id="ssl-summary-cards">
+        <div class="stat-box"><div class="sv val-green" id="ssl-ok">–</div><div class="sl">Valid (&gt;30 days)</div></div>
+        <div class="stat-box"><div class="sv val-yellow" id="ssl-warn">–</div><div class="sl">Expiring Soon (&le;30d)</div></div>
+        <div class="stat-box"><div class="sv val-red" id="ssl-crit">–</div><div class="sl">Critical (&le;7 days)</div></div>
+        <div class="stat-box"><div class="sv" id="ssl-total">–</div><div class="sl">Total Monitored</div></div>
+      </div>
+
+      <!-- Full SSL table -->
+      <div class="card">
+        <div class="card-header"><h3>Certificate Details</h3></div>
+        <div id="ssl-full-table" style="overflow-x:auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOPOLOGY PAGE -->
+  <div id="page-topology" class="page">
+    <div class="topbar">
+      <h2>
+        <svg width="16" height="16" style="color:var(--fnb-teal);vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        Service Topology
+      </h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openAddDependencyModal()">
+          <svg><use href="#ic-plus"/></svg> Add Dependency
+        </button>
+        <button class="btn btn-secondary btn-icon" onclick="loadTopology()" title="Refresh">
+          <svg width="15" height="15"><use href="#ic-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+    <div style="padding:20px">
+
+      <!-- Legend + stats bar -->
+      <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:16px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)">
+        <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Legend:</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--green);display:inline-block"></span>Operational</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--red);display:inline-block"></span>Down</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--text3);display:inline-block"></span>Paused</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--yellow);display:inline-block"></span>Pending</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="topo-stats"></span>
+      </div>
+
+      <!-- View toggle -->
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button class="tf-btn active" id="topo-view-map" onclick="topoSetView('map')">🗺 Dependency Map</button>
+        <button class="tf-btn" id="topo-view-swimlane" onclick="topoSetView('swimlane')">⬛ Swimlane View</button>
+        <button class="tf-btn" id="topo-view-deps" onclick="topoSetView('deps')">🔗 Dependency List</button>
+      </div>
+
+      <!-- MAP VIEW -->
+      <div id="topo-view-map-panel">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--text3)">Click a node to see impact analysis. Arrows show dependencies (A → B means A depends on B).</span>
+            <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+              <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
+                <input type="checkbox" id="topo-show-all" onchange="topoToggleShowAll()" style="cursor:pointer"/>
+                Show all services
+              </label>
+              <button class="btn btn-secondary btn-sm" onclick="topoAutoLayout()">Auto Layout</button>
+            </div>
+          </div>
+          <div style="position:relative;overflow:hidden;background:#f8fffe">
+            <canvas id="topo-canvas" style="display:block;cursor:default" width="1200" height="600"></canvas>
+          </div>
+        </div>
+        <!-- Impact panel — fixed side drawer -->
+        <div id="topo-impact-panel" style="display:none;position:fixed;top:0;right:0;width:380px;height:100vh;background:var(--surface);border-left:1px solid var(--border);box-shadow:-4px 0 20px rgba(0,0,0,.12);z-index:1000;overflow-y:auto;pointer-events:none">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--surface);position:sticky;top:0;z-index:1">
+            <svg width="16" height="16" style="color:var(--fnb-teal);flex-shrink:0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            <span style="font-size:13px;font-weight:700;color:var(--text);flex:1" id="topo-impact-title">Impact Analysis</span>
+            <button onclick="document.getElementById('topo-impact-panel').style.display='none';document.getElementById('topo-impact-panel').style.pointerEvents='none';topoSelected=null;" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1;padding:0 4px">&times;</button>
+          </div>
+          <div id="topo-impact-body" style="padding:16px"></div>
+        </div>
+      </div>
+
+      <!-- SWIMLANE VIEW -->
+      <div id="topo-view-swimlane-panel" style="display:none">
+        <div id="topo-swimlane-content"></div>
+      </div>
+
+      <!-- DEPENDENCY LIST VIEW -->
+      <div id="topo-view-deps-panel" style="display:none">
+        <div class="card">
+          <div class="card-header"><h3>All Dependencies</h3></div>
+          <div class="card-body" style="padding:0">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Service</th><th>Depends On</th><th>Label</th><th>Actions</th></tr></thead>
+                <tbody id="topo-deps-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- DATABASES PAGE -->
+  <div id="page-databases" class="page">
+    <div class="topbar">
+      <h2>
+        <svg width="16" height="16" style="color:var(--fnb-teal);vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        Database Monitors
+      </h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openAddDbModal()">
+          <svg><use href="#ic-plus"/></svg> Add Database
+        </button>
+        <button class="btn btn-secondary btn-icon" onclick="loadDatabases()" title="Refresh">
+          <svg width="15" height="15"><use href="#ic-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+    <div style="padding:20px">
+
+      <!-- Summary stat boxes -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px">
+        <div class="stat-box"><div class="sv" id="db-total">–</div><div class="sl">Total</div></div>
+        <div class="stat-box"><div class="sv val-green" id="db-up">–</div><div class="sl">Online</div></div>
+        <div class="stat-box"><div class="sv val-red" id="db-down">–</div><div class="sl">Offline</div></div>
+        <div class="stat-box"><div class="sv val-blue" id="db-avg-lat">–</div><div class="sl">Avg Latency</div></div>
+        <div class="stat-box"><div class="sv val-yellow" id="db-avg-conn">–</div><div class="sl">Avg Connections</div></div>
+      </div>
+
+      <!-- Timeframe bar -->
+      <div class="tf-bar" style="margin-bottom:16px">
+        <label>Period:</label>
+        <div class="tf-presets" id="db-tf-presets">
+          <button class="tf-btn" data-p="1h"  onclick="dbSetPreset('1h')">1h</button>
+          <button class="tf-btn" data-p="3h"  onclick="dbSetPreset('3h')">3h</button>
+          <button class="tf-btn" data-p="6h"  onclick="dbSetPreset('6h')">6h</button>
+          <button class="tf-btn active" data-p="24h" onclick="dbSetPreset('24h')">24h</button>
+          <button class="tf-btn" data-p="7d"  onclick="dbSetPreset('7d')">7d</button>
+          <button class="tf-btn" data-p="30d" onclick="dbSetPreset('30d')">30d</button>
+        </div>
+      </div>
+
+      <!-- DB cards grid -->
+      <div id="db-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
+        <div class="loading-center" style="grid-column:1/-1;padding:40px"><div class="spinner"></div>&nbsp; Loading databases...</div>
+      </div>
+
+      <!-- Detail panel -->
+      <div id="db-detail-panel" style="display:none;margin-top:20px">
+        <div class="card">
+          <div class="card-header">
+            <h3 id="db-detail-title">Database Detail</h3>
+            <button class="btn btn-secondary btn-sm" onclick="if(extMetricsInterval){clearInterval(extMetricsInterval);extMetricsInterval=null;}document.getElementById('db-detail-panel').style.display='none'">Close</button>
+          </div>
+          <div class="card-body" id="db-detail-body"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- SERVER INVENTORY PAGE -->
+  <div id="page-servers" class="page">
+    <div class="topbar">
+      <h2>
+        <svg width="16" height="16" style="color:var(--fnb-teal);vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        Server Inventory
+      </h2>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openAddServerModal()">
+          <svg><use href="#ic-plus"/></svg> Add Server
+        </button>
+        <button class="btn btn-secondary btn-icon" onclick="loadServers()" title="Refresh">
+          <svg width="15" height="15"><use href="#ic-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+    <div style="padding:20px">
+
+      <!-- Summary + filter bar -->
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;flex:1">
+          <div class="stat-box"><div class="sv" id="srv-total">–</div><div class="sl">Total</div></div>
+          <div class="stat-box"><div class="sv val-green" id="srv-healthy">–</div><div class="sl">Healthy</div></div>
+          <div class="stat-box"><div class="sv val-yellow" id="srv-degraded">–</div><div class="sl">Degraded</div></div>
+          <div class="stat-box"><div class="sv val-red" id="srv-critical">–</div><div class="sl">Critical</div></div>
+          <div class="stat-box"><div class="sv val-blue" id="srv-prod">–</div><div class="sl">PROD</div></div>
+          <div class="stat-box"><div class="sv" id="srv-uat">–</div><div class="sl">UAT</div></div>
+        </div>
+      </div>
+
+      <!-- Environment filter -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+        <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase">Filter:</span>
+        <div class="tf-presets" id="srv-env-filter">
+          <button class="tf-btn active" data-env="" onclick="srvSetEnv('')">All</button>
+          <button class="tf-btn" data-env="PROD" onclick="srvSetEnv('PROD')">PROD</button>
+          <button class="tf-btn" data-env="UAT" onclick="srvSetEnv('UAT')">UAT</button>
+          <button class="tf-btn" data-env="INT" onclick="srvSetEnv('INT')">INT</button>
+          <button class="tf-btn" data-env="PRE" onclick="srvSetEnv('PRE')">PRE</button>
+          <button class="tf-btn" data-env="DEV" onclick="srvSetEnv('DEV')">DEV</button>
+        </div>
+        <input type="text" id="srv-search" placeholder="Search hostname or role..." oninput="srvFilterCards()"
+          style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;background:var(--surface);color:var(--text);outline:none;min-width:220px"/>
+      </div>
+
+      <!-- Server cards -->
+      <div id="srv-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
+        <div class="loading-center" style="grid-column:1/-1;padding:40px"><div class="spinner"></div>&nbsp; Loading servers...</div>
+      </div>
+
+      <!-- Detail panel -->
+      <div id="srv-detail-panel" style="display:none;margin-top:20px">
+        <div class="card">
+          <div class="card-header">
+            <h3 id="srv-detail-title">Server Detail</h3>
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('srv-detail-panel').style.display='none'">Close</button>
+          </div>
+          <div class="card-body" id="srv-detail-body"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- SOFTWARE INVENTORY PAGE (sub-tabs: Installed | Catalogue | Version Checks) -->
+  <div id="page-software" class="page">
+    <div class="topbar">
+      <h2>
+        <svg width="16" height="16" style="color:var(--fnb-teal);vertical-align:middle;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="12" cy="10" r="3"/></svg>
+        Software Inventory
+      </h2>
+      <div class="topbar-actions" id="sw-tab-actions-inventory">
+        <button class="btn btn-primary" onclick="openAddSwModal()"><svg><use href="#ic-plus"/></svg> Add Software</button>
+        <button class="btn btn-secondary btn-icon" onclick="loadSoftware()" title="Refresh"><svg width="15" height="15"><use href="#ic-refresh"/></svg></button>
+      </div>
+      <div class="topbar-actions" id="sw-tab-actions-catalogue" style="display:none">
+        <button id="cat-apply-btn" class="btn btn-warning" onclick="applyCatalogue()">⚡ Apply to All</button>
+        <button class="btn btn-primary" onclick="openAddCatModal()"><svg><use href="#ic-plus"/></svg> Add Rule</button>
+        <button class="btn btn-secondary btn-icon" onclick="loadCatalogue()" title="Refresh"><svg width="15" height="15"><use href="#ic-refresh"/></svg></button>
+      </div>
+      <div class="topbar-actions" id="sw-tab-actions-version" style="display:none">
+        <button id="vc-run-btn" class="btn btn-warning" onclick="runVersionChecks()">▶ Run Now</button>
+        <button class="btn btn-primary" onclick="openAddTrackerModal()"><svg><use href="#ic-plus"/></svg> Add Tracker</button>
+        <button class="btn btn-secondary btn-icon" onclick="loadVersionChecksPage()" title="Refresh"><svg width="15" height="15"><use href="#ic-refresh"/></svg></button>
+      </div>
+    </div>
+    <div style="padding:20px">
+
+      <!-- Sub-tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="sw-subtab-inventory" onclick="swSwitchTab('inventory')" style="padding:8px 20px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--fnb-teal);border-bottom:2px solid var(--fnb-teal);margin-bottom:-2px">📦 Installed Software</button>
+        <button id="sw-subtab-catalogue" onclick="swSwitchTab('catalogue')" style="padding:8px 20px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px">📋 Catalogue</button>
+        <button id="sw-subtab-version"   onclick="swSwitchTab('version')"   style="padding:8px 20px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;display:flex;align-items:center;gap:6px">🔍 Version Checks <span id="nav-outdated-badge" style="display:none;background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px"></span></button>
+      </div>
+
+      <!-- SUB-TAB: INSTALLED SOFTWARE -->
+      <div id="sw-panel-inventory">
+
+      <!-- Summary stats -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px">
+          <div class="stat-box"><div class="sv" id="sw-total">–</div><div class="sl">Total</div></div>
+          <div class="stat-box"><div class="sv val-red" id="sw-eol">–</div><div class="sl">End of Life</div></div>
+          <div class="stat-box"><div class="sv val-yellow" id="sw-high-risk">–</div><div class="sl">High / Critical Risk</div></div>
+          <div class="stat-box"><div class="sv val-blue" id="sw-prod">–</div><div class="sl">PROD</div></div>
+          <div class="stat-box"><div class="sv" id="sw-uat">–</div><div class="sl">UAT</div></div>
+        </div>
+
+        <!-- Filters -->
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)">
+          <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap">Server:</span>
+          <select id="sw-server-select" onchange="swSetServerFilter(this.value)"
+            style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:var(--radius);font-size:12px;outline:none;min-width:160px">
+            <option value="">All Servers</option>
+          </select>
+          <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap;margin-left:8px">Env:</span>
+          <div class="tf-presets" id="sw-env-filter">
+            <button class="tf-btn active" data-env="" onclick="swSetEnv('')">All</button>
+            <button class="tf-btn" data-env="PROD" onclick="swSetEnv('PROD')">PROD</button>
+            <button class="tf-btn" data-env="UAT" onclick="swSetEnv('UAT')">UAT</button>
+            <button class="tf-btn" data-env="DEV" onclick="swSetEnv('DEV')">DEV</button>
+          </div>
+          <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap;margin-left:8px">Risk:</span>
+          <div class="tf-presets" id="sw-risk-filter">
+            <button class="tf-btn active" data-risk="" onclick="swSetRisk('')">All</button>
+            <button class="tf-btn" data-risk="Low" onclick="swSetRisk('Low')">Low</button>
+            <button class="tf-btn" data-risk="Medium" onclick="swSetRisk('Medium')">Medium</button>
+            <button class="tf-btn" data-risk="High" onclick="swSetRisk('High')">High</button>
+            <button class="tf-btn" data-risk="Critical" onclick="swSetRisk('Critical')">Critical</button>
+          </div>
+          <span style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;white-space:nowrap;margin-left:8px">Status:</span>
+          <div class="tf-presets" id="sw-status-filter">
+            <button class="tf-btn active" data-status="" onclick="swSetStatus('')">All</button>
+            <button class="tf-btn" data-status="Supported" onclick="swSetStatus('Supported')">Supported</button>
+            <button class="tf-btn" data-status="End of Life" onclick="swSetStatus('End of Life')">EOL</button>
+            <button class="tf-btn" data-status="Extended Support" onclick="swSetStatus('Extended Support')">Extended</button>
+          </div>
+          <input type="text" id="sw-search" placeholder="Search name, vendor, path..." oninput="swSearch()"
+            style="padding:5px 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:12px;background:var(--surface);color:var(--text);outline:none;min-width:200px;margin-left:auto"/>
+        </div>
+
+        <!-- Table -->
+        <div class="card">
+          <div class="card-header">
+            <h3>📦 Installed Software</h3>
+            <span style="font-size:11px;color:var(--text3)">Rows highlighted in red = End of Life</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Server</th>
+                  <th>Software Name</th>
+                  <th>Version</th>
+                  <th>Vendor</th>
+                  <th>License</th>
+                  <th>Support Status</th>
+                  <th>Risk Rating</th>
+                  <th>Source</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="sw-tbody">
+                <tr><td colspan="9" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div><!-- /sw-panel-inventory -->
+
+      <!-- SUB-TAB: CATALOGUE -->
+      <div id="sw-panel-catalogue" style="display:none">
+        <div style="padding:12px 16px;background:var(--blue-dim);border:1px solid var(--blue);border-radius:var(--radius);font-size:13px;color:var(--blue);margin-bottom:20px">
+          <strong>How it works:</strong> Add name patterns (SQL LIKE syntax &mdash; use <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">%</code> as wildcard) to auto-classify agent-discovered software.
+          Click <strong>⚡ Apply to All</strong> to enrich all existing entries. New agent heartbeats are enriched automatically.
+          Example: <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">wso2%</code> matches <em>wso2-identity-server</em>, <em>wso2am</em>, etc.
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>📋 Classification Rules</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name Pattern</th><th>Vendor</th><th>License</th><th>Support Status</th><th>Risk Rating</th><th>Notes</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="cat-tbody">
+                <tr><td colspan="7" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div><!-- /sw-panel-catalogue -->
+
+      <!-- SUB-TAB: VERSION CHECKS -->
+      <div id="sw-panel-version" style="display:none">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:20px">
+          <div class="stat-box"><div class="sv val-red" id="vc-outdated">–</div><div class="sl">Outdated</div></div>
+          <div class="stat-box"><div class="sv val-green" id="vc-uptodate">–</div><div class="sl">Up to Date</div></div>
+          <div class="stat-box"><div class="sv val-yellow" id="vc-unknown">–</div><div class="sl">Unknown</div></div>
+          <div class="stat-box"><div class="sv val-red" id="vc-servers">–</div><div class="sl">Servers Affected</div></div>
+        </div>
+        <div style="padding:10px 14px;background:var(--blue-dim);border:1px solid var(--blue);border-radius:var(--radius);font-size:13px;color:var(--blue);margin-bottom:16px">
+          <strong>How it works:</strong> Each tracker checks the latest published version of a software product (via GitHub, Jenkins update center, or a URL).
+          It compares against what your agents report as installed. Checks run automatically every <strong>6 hours</strong>.
+          You will receive a daily email alert for any server with outdated packages.
+        </div>
+        <div class="card" style="margin-bottom:20px">
+          <div class="card-header">
+            <h3>🔍 Findings — Installed vs Latest</h3>
+            <div class="tf-presets" id="vc-status-filter">
+              <button class="tf-btn active" data-vcstatus="" onclick="vcSetStatus('')">All</button>
+              <button class="tf-btn" data-vcstatus="outdated" onclick="vcSetStatus('outdated')">Outdated</button>
+              <button class="tf-btn" data-vcstatus="up_to_date" onclick="vcSetStatus('up_to_date')">Up to Date</button>
+              <button class="tf-btn" data-vcstatus="unknown" onclick="vcSetStatus('unknown')">Unknown</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Server</th><th>Software</th><th>Installed Version</th><th>Latest Version</th><th>Status</th><th>Last Checked</th></tr>
+              </thead>
+              <tbody id="vc-findings-tbody">
+                <tr><td colspan="6" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>⚙ Version Trackers</h3>
+            <span style="font-size:11px;color:var(--text3)">Define which software products to track and how to fetch their latest version</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Software</th><th>Matches (name contains)</th><th>Check Method</th><th>Source</th><th>Latest Version</th><th>Last Checked</th><th>Enabled</th><th>Actions</th></tr>
+              </thead>
+              <tbody id="vc-trackers-tbody">
+                <tr><td colspan="8" style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div><!-- /sw-panel-version -->
+
+    </div>
+  </div>
+
+</div>
+</div>
+<!-- MODALS -->
+<!-- Add/Edit Version Tracker Modal -->
+<div class="modal-overlay" id="modal-tracker">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h3 id="modal-tracker-title">Add Version Tracker</h3>
+      <button class="modal-close" onclick="closeModal('modal-tracker')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="tracker-entry-id"/>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Display Name</label>
+          <input class="form-control" id="tracker-display-name" placeholder="e.g. Jenkins"/>
+        </div>
+        <div class="form-group">
+          <label>Name Match (contains)</label>
+          <input class="form-control" id="tracker-name-match" placeholder="e.g. jenkins"/>
+          <div class="form-hint">Matches software_inventory.name (case-insensitive, partial match)</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Check Method</label>
+        <select class="form-control" id="tracker-check-type" onchange="trackerCheckTypeChanged()">
+          <option value="github_release">GitHub Latest Release</option>
+          <option value="jenkins_update_center">Jenkins Update Center</option>
+          <option value="url_regex">URL + Regex</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label id="tracker-source-label">GitHub repo (owner/repo)</label>
+        <input class="form-control" id="tracker-check-source" placeholder="e.g. jenkinsci/jenkins"/>
+      </div>
+      <div class="form-group" id="tracker-regex-group" style="display:none">
+        <label>Regex Pattern (capture group 1 = version)</label>
+        <input class="form-control" id="tracker-regex" placeholder="e.g. v([0-9]+\.[0-9]+\.[0-9]+)"/>
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <input class="form-control" id="tracker-notes" placeholder="Optional description"/>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="tracker-enabled" checked style="width:16px;height:16px"/> Enabled
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tracker')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTracker()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Catalogue Rule Modal -->
+<div class="modal-overlay" id="modal-cat">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <h3 id="modal-cat-title">Add Catalogue Rule</h3>
+      <button class="modal-close" onclick="closeModal('modal-cat')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="cat-entry-id"/>
+      <div class="form-group">
+        <label>Name Pattern (SQL LIKE)</label>
+        <input class="form-control" id="cat-pattern" placeholder="e.g. wso2% or %postgres% or java%"/>
+        <div class="form-hint">Use % as wildcard. Matches against software name (case-insensitive).</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Vendor</label>
+          <input class="form-control" id="cat-vendor" placeholder="e.g. Red Hat, Oracle, WSO2"/>
+        </div>
+        <div class="form-group">
+          <label>License Type</label>
+          <select class="form-control" id="cat-license">
+            <option value="">– Select –</option>
+            <option value="Commercial">Commercial</option>
+            <option value="Open Source">Open Source</option>
+            <option value="Freeware">Freeware</option>
+            <option value="Proprietary">Proprietary</option>
+            <option value="Subscription">Subscription</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Support Status</label>
+          <select class="form-control" id="cat-status">
+            <option value="Supported">Supported</option>
+            <option value="End of Life">End of Life</option>
+            <option value="Extended Support">Extended Support</option>
+            <option value="Unknown">Unknown</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Risk Rating</label>
+          <select class="form-control" id="cat-risk">
+            <option value="Low">Low</option>
+            <option value="Medium">Medium</option>
+            <option value="High">High</option>
+            <option value="Critical">Critical</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notes (optional)</label>
+        <input class="form-control" id="cat-notes" placeholder="e.g. WSO2 middleware platform"/>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-cat')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCat()">Save Rule</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="modal-sw">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <h3 id="modal-sw-title">Add Software</h3>
+      <button class="modal-close" onclick="closeModal('modal-sw')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="sw-entry-id"/>
+      <div class="form-group">
+        <label>Server</label>
+        <select class="form-control" id="sw-server-id">
+          <option value="">Select server...</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Software Name</label>
+          <input class="form-control" id="sw-name" placeholder="e.g. WSO2 Identity Server"/>
+        </div>
+        <div class="form-group">
+          <label>Version</label>
+          <input class="form-control" id="sw-version" placeholder="e.g. 5.11.0"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Vendor</label>
+          <input class="form-control" id="sw-vendor" placeholder="e.g. WSO2, Red Hat, Microsoft"/>
+        </div>
+        <div class="form-group">
+          <label>License Type</label>
+          <select class="form-control" id="sw-license">
+            <option value="">– Select –</option>
+            <option value="Commercial">Commercial</option>
+            <option value="Open Source">Open Source</option>
+            <option value="Freeware">Freeware</option>
+            <option value="Proprietary">Proprietary</option>
+            <option value="Subscription">Subscription</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Support Status</label>
+          <select class="form-control" id="sw-support-status">
+            <option value="Supported">Supported</option>
+            <option value="End of Life">End of Life</option>
+            <option value="Extended Support">Extended Support</option>
+            <option value="Unknown">Unknown</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Risk Rating</label>
+          <select class="form-control" id="sw-risk">
+            <option value="Low">Low</option>
+            <option value="Medium">Medium</option>
+            <option value="High">High</option>
+            <option value="Critical">Critical</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Install Path (optional)</label>
+        <input class="form-control" id="sw-install-path" placeholder="e.g. /opt/wso2"/>
+      </div>
+      <div class="form-group">
+        <label>Discovered By</label>
+        <select class="form-control" id="sw-discovered-by">
+          <option value="manual">Manual</option>
+          <option value="agent">Agent</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-sw')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSw()">Save</button>
+    </div>
+  </div>
+</div>
+<!-- Add Server Modal -->
+<div class="modal-overlay" id="modal-server">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-header">
+      <h3 id="modal-server-title">Add Server</h3>
+      <button class="modal-close" onclick="closeModal('modal-server')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="srv-id"/>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Hostname</label>
+          <input class="form-control" id="srv-hostname" placeholder="e.g. frm-rbautodev01"/>
+        </div>
+        <div class="form-group">
+          <label>IP Address</label>
+          <input class="form-control" id="srv-ip" placeholder="e.g. 172.20.24.253"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Environment</label>
+          <select class="form-control" id="srv-env">
+            <option value="PROD">PROD</option>
+            <option value="UAT">UAT</option>
+            <option value="INT">INT</option>
+            <option value="PRE">PRE</option>
+            <option value="DEV">DEV</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Operating System</label>
+          <input class="form-control" id="srv-os" placeholder="e.g. RHEL 8.6"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Role / Purpose</label>
+        <input class="form-control" id="srv-role" placeholder="e.g. Jenkins CI/CD, APISIX Gateway, PostgreSQL DB"/>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>CPU Cores</label>
+          <input class="form-control" id="srv-cpu" type="number" placeholder="e.g. 8"/>
+        </div>
+        <div class="form-group">
+          <label>RAM (GB)</label>
+          <input class="form-control" id="srv-ram" type="number" placeholder="e.g. 32"/>
+        </div>
+        <div class="form-group">
+          <label>Disk (GB)</label>
+          <input class="form-control" id="srv-disk" type="number" placeholder="e.g. 500"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Last Patched / Updated</label>
+          <input class="form-control" id="srv-last-patched" type="date" title="Date server was last patched or OS updated"/>
+        </div>
+        <div class="form-group">
+          <label>Location / DC</label>
+          <input class="form-control" id="srv-location" placeholder="e.g. JHB DC1"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <textarea class="form-control" id="srv-notes" rows="2" placeholder="Any additional notes about this server..."></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Linked Monitors</label>
+          <div id="srv-monitor-checkboxes" style="max-height:160px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px">
+            <div style="font-size:12px;color:var(--text3);padding:4px">Loading...</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Linked DB Monitors</label>
+          <div id="srv-db-checkboxes" style="max-height:160px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px">
+            <div style="font-size:12px;color:var(--text3);padding:4px">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-server')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveServer()">Save Server</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Database Modal -->
+<div class="modal-overlay" id="modal-db">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-db-title">Add Database Monitor</h3>
+      <button class="modal-close" onclick="closeModal('modal-db')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="db-id"/>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Database Type</label>
+          <select class="form-control" id="db-type" onchange="dbTypeChanged()">
+            <option value="mssql">Microsoft SQL Server</option>
+            <option value="postgres">PostgreSQL</option>
+            <option value="tcp">TCP Only (no credentials)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Display Name</label>
+          <input class="form-control" id="db-name" placeholder="e.g. Actimize DB PROD"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Host / IP</label>
+          <input class="form-control" id="db-host" placeholder="e.g. frm-rbsqlprd01"/>
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input class="form-control" id="db-port" type="number" value="1433"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Database Name (optional)</label>
+          <input class="form-control" id="db-database" placeholder="Leave blank for default"/>
+        </div>
+        <div class="form-group">
+          <label>Group</label>
+          <input class="form-control" id="db-group" placeholder="e.g. Actimize, TOM"/>
+        </div>
+      </div>
+      <div id="db-creds-section">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Username (optional)</label>
+            <input class="form-control" id="db-username" placeholder="Leave blank for TCP-only check"/>
+          </div>
+          <div class="form-group">
+            <label>Password (optional)</label>
+            <input class="form-control" id="db-password" type="password" placeholder="Leave blank for TCP-only check"/>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Check Interval (seconds)</label>
+          <input class="form-control" id="db-interval" type="number" value="60"/>
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <input class="form-control" id="db-description" placeholder="e.g. Actimize production database"/>
+        </div>
+      </div>
+      <div class="form-check" style="margin-top:4px">
+        <input type="checkbox" id="db-notify"/>
+        <label for="db-notify" style="cursor:pointer">Send email alert on status change</label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-db')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveDbMonitor()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Dependency Modal -->
+<div class="modal-overlay" id="modal-dependency">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Dependency</h3>
+      <button class="modal-close" onclick="closeModal('modal-dependency')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Define that <strong>Service A</strong> depends on <strong>Service B</strong>. If B goes down, A is impacted.</p>
+      <div class="form-group">
+        <label>Service A (depends on →)</label>
+        <select class="form-control" id="dep-monitor-id">
+          <option value="">Select service...</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Service B (dependency)</label>
+        <select class="form-control" id="dep-depends-on">
+          <option value="">Select dependency...</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Label (optional)</label>
+        <input class="form-control" id="dep-label" placeholder="e.g. Auth, API, Database"/>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dependency')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveDependency()">Add Dependency</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-monitor">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-monitor-title">Add Monitor</h3>
+      <button class="modal-close" onclick="closeModal('modal-monitor')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="m-id"/>
+      <div class="form-group"><label>Monitor Type</label>
+        <select class="form-control" id="m-type" onchange="onMonitorTypeChange()">
+          <option value="http">HTTP / HTTPS</option>
+          <option value="keyword">HTTP Keyword</option>
+          <option value="http-post">HTTP POST (API / JSON)</option>
+          <option value="tcp">TCP Port</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Friendly Name</label><input class="form-control" id="m-name" placeholder="e.g. Jenkins Production"/></div>
+      <div class="form-group">
+        <label id="m-url-label">URL</label>
+        <input class="form-control" id="m-url" placeholder="https://example.com"/>
+        <div class="form-hint" id="m-url-hint">Full URL including https://</div>
+      </div>
+      <div class="form-group" id="m-post-group" style="display:none">
+        <label>Request Body (JSON)</label>
+        <textarea class="form-control" id="m-request-body" rows="6"
+          placeholder='{"requestId":"test","searchDefinitionId":"RT_UN",...}'
+          style="font-family:monospace;font-size:12px"></textarea>
+        <div class="form-hint">JSON body sent with the POST request</div>
+      </div>
+      <div class="form-group" id="m-headers-group" style="display:none">
+        <label>Request Headers (JSON, optional)</label>
+        <input class="form-control" id="m-request-headers"
+          placeholder='{"Authorization":"Bearer token","X-Custom":"value"}'/>
+        <div class="form-hint">Additional headers as JSON object. Content-Type: application/json is always included.</div>
+      </div>
+      <div class="form-group" id="m-keyword-group" style="display:none">
+        <label>Keyword to find in response</label>
+        <input class="form-control" id="m-keyword" placeholder="e.g. success or requestId"/>
+        <div class="form-hint">Monitor is DOWN if this keyword is NOT found in the response body</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Heartbeat Interval</label>
+          <select class="form-control" id="m-interval">
+            <option value="30">Every 30 seconds</option>
+            <option value="60" selected>Every 1 minute</option>
+            <option value="120">Every 2 minutes</option>
+            <option value="300">Every 5 minutes</option>
+            <option value="600">Every 10 minutes</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Retries before DOWN</label>
+          <select class="form-control" id="m-retries">
+            <option value="1">1</option><option value="2">2</option>
+            <option value="3" selected>3</option><option value="5">5</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Timeout (seconds)</label><input class="form-control" id="m-timeout" type="number" value="10" min="1" max="60"/></div>
+        <div class="form-group" id="m-codes-group">
+          <label>Accepted Status Codes</label>
+          <input class="form-control" id="m-codes" value="200-299" placeholder="200-299,403"/>
+          <div class="form-hint">e.g. 200-299,403</div>
+        </div>
+      </div>
+      <div class="form-group"><label>Description (optional)</label><input class="form-control" id="m-desc" placeholder="Short description"/></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Application Group</label>
+          <input class="form-control" id="m-group" placeholder="e.g. Jenkins, Database, API Gateway"/>
+          <div class="form-hint">Groups monitors together on the dashboard</div>
+        </div>
+        <div class="form-group"><label>Tags (comma-separated)</label><input class="form-control" id="m-tags" placeholder="production, jenkins, api"/></div>
+      </div>
+      <div class="form-group">
+        <label class="form-check">
+          <input type="checkbox" id="m-notify"/> Send email alert on status change
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-monitor')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMonitor()">Save Monitor</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-status-page">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-sp-title">New Status Page</h3>
+      <button class="modal-close" onclick="closeModal('modal-status-page')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="sp-id"/>
+      <div class="form-row">
+        <div class="form-group"><label>Page Title</label><input class="form-control" id="sp-title-input" placeholder="System Status"/></div>
+        <div class="form-group">
+          <label>Slug (URL path)</label>
+          <input class="form-control" id="sp-slug" placeholder="my-status-page"/>
+          <div class="form-hint">Share link: /?page=your-slug</div>
+        </div>
+      </div>
+      <div class="form-group"><label>Description</label><input class="form-control" id="sp-desc-input" placeholder="Live status of our services"/></div>
+      <div class="form-group"><label>Theme</label>
+        <select class="form-control" id="sp-theme">
+          <option value="light">Light</option><option value="dark">Dark</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Monitors on this page</label>
+        <div id="sp-monitor-checkboxes" style="max-height:200px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px"></div>
+      </div>
+      <div class="form-group" style="margin-top:4px">
+        <label>Database Monitors on this page</label>
+        <div id="sp-db-checkboxes" style="max-height:160px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px">
+          <div style="font-size:12px;color:var(--text3);padding:4px">Loading...</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-status-page')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveStatusPage()">Save Page</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <h3>Confirm Delete</h3>
+      <button class="modal-close" onclick="closeModal('modal-confirm')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:12px;align-items:flex-start">
+        <svg width="24" height="24" style="color:var(--red);flex-shrink:0;margin-top:2px"><use href="#ic-alert"/></svg>
+        <p id="confirm-msg" style="color:var(--text2);line-height:1.6"></p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-confirm')">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Maintenance Window Modal -->
+<div class="modal-overlay" id="modal-maintenance">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h3>Schedule Maintenance Window</h3>
+      <button class="modal-close" onclick="closeModal('modal-maintenance')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Title</label>
+        <input class="form-control" id="mw-title" placeholder="e.g. WSO2 Deployment v2.1"/>
+      </div>
+      <div class="form-group">
+        <label>Monitor (leave blank for all monitors)</label>
+        <select class="form-control" id="mw-monitor">
+          <option value="">All Monitors</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Start Date &amp; Time</label>
+          <input class="form-control" id="mw-start" type="datetime-local"/>
+        </div>
+        <div class="form-group">
+          <label>End Date &amp; Time</label>
+          <input class="form-control" id="mw-end" type="datetime-local"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-check">
+          <input type="checkbox" id="mw-repeat"/>
+          Repeat weekly (same day and time every week)
+        </label>
+        <div class="form-hint">Useful for scheduled weekly maintenance slots</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-maintenance')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMaintenance()">Schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit User Modal -->
+<div class="modal-overlay" id="modal-user">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <h3 id="modal-user-title">Add User</h3>
+      <button class="modal-close" onclick="closeModal('modal-user')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="u-id"/>
+      <div class="form-group">
+        <label>Username</label>
+        <input class="form-control" id="u-username" placeholder="e.g. jsmith"/>
+      </div>
+      <div class="form-group">
+        <label>Password <span id="u-pass-hint" style="font-weight:400;text-transform:none;color:var(--text3)">(leave blank to keep current)</span></label>
+        <input class="form-control" id="u-password" type="password" placeholder="Enter password"/>
+      </div>
+      <div class="form-group">
+        <label>Role</label>
+        <select class="form-control" id="u-role">
+          <option value="viewer">Viewer — can view dashboard only</option>
+          <option value="dba">DBA — database monitoring only</option>
+          <option value="admin">Admin — full access including user management</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-user')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUser()">Save User</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="app.js?v=20260428a"></script>
+<script src="db.js?v=20260428a"></script>
+<script src="servers.js?v=20260428a"></script>
+<script src="software.js?v=20260428a"></script>
+</body>
+</html>
