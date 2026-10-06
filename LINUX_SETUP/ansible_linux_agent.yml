@@ -32,6 +32,10 @@
 
     - name: Run metrics collection script
       shell: "bash {{ script_path_remote }}"
+      environment:
+        # Only ACR hosts define croit_process_config (see inventory); all others
+        # default to empty so the collector emits an empty process_services list.
+        CROIT_PROCESS_CONFIG: "{{ croit_process_config | default('') }}"
       register: metrics_json
 
     - name: Save metrics to temp file

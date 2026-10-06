@@ -5,16 +5,25 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Critical Process/Service Config — EDIT THIS BLOCK to add/remove monitored procs
+# Critical Process/Service Config — now sourced from the CROIT_PROCESS_CONFIG env var
 # ═══════════════════════════════════════════════════════════════════════════════
+# The config is NO LONGER hardcoded here. It comes from the CROIT_PROCESS_CONFIG
+# environment variable, which Ansible sets per-host-group from the inventory
+# variable `croit_process_config`. Only the ACR (AlertController) Fircosoft hosts
+# define it; every other host leaves it empty, so NO process monitoring happens
+# (an empty config emits "process_services":[]).
+#
 # These are shell-launched java/FKRUN processes under the `fircosoft` user that
 # `systemctl` never lists, so we detect them by command-line pattern via `ps`.
-# Format (one per line):  name|pattern|expected_ports(comma-sep)|critical(true|false)
-# `pattern` is matched with `grep -F` (fixed string) against `ps -eo pid,args`.
-PROCESS_SERVICE_CONFIG="AlertReview|tierName=AlertReview|6902,8443|true
-AlertController-Orchestrator|tierName=AlertControllerOrchestrator|6080,6081|true
-AlertController-CoreEngine|/opt/fircosoft/BackEnds/bin/AlertController/CoreEngine/FKRUN|6450,6500,6900|true
-AppDynamics-AppAgent|appdynamics|{EMPTY}|false"
+#
+# Format per entry:  name|pattern|expected_ports(comma-sep)|critical(true|false)
+#   - `pattern` is matched with `grep -F` (fixed string) against `ps -eo pid,args`.
+# Entries are separated by `;;` in the env var (newlines don't survive the Ansible
+# shell env cleanly), and are translated back into newlines below so the existing
+# `while IFS='|' read ... done <<EOF` loop keeps working unchanged.
+PROCESS_SERVICE_CONFIG="${CROIT_PROCESS_CONFIG:-}"
+# Translate the `;;` record separator back into newlines (one entry per line).
+PROCESS_SERVICE_CONFIG=$(printf '%s' "$PROCESS_SERVICE_CONFIG" | sed 's/;;/\n/g')
 
 # OS Info
 OS_NAME=$(grep -m1 '^NAME=' /etc/os-release 2>/dev/null | cut -d'"' -f2)
