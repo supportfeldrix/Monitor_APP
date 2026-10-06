@@ -13,7 +13,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 - name: CROIT Linux Agent - Collect metrics via SSH
-  hosts: linux_servers
+  hosts: fircosoft_acr
   gather_facts: no
   strategy: free
   vars:
