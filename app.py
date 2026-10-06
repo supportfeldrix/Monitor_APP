@@ -630,6 +630,37 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_svc_server_id ON server_services (server_id);
         """)
+
+    # Migration: critical process/service monitoring (watched flag, events, watched_services)
+    # (a) 'watched' column keeps older read paths tolerant; the live value is
+    #     computed from watched_services (below), which survives the heartbeat's
+    #     DELETE/reinsert of server_services rows.
+    try:
+        conn.execute("ALTER TABLE server_services ADD COLUMN watched INTEGER DEFAULT 0")
+        print("[DB] Migrated: added watched column to server_services.")
+    except Exception:
+        pass  # column already exists
+    # (b) stable watched flag + transition history
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS watched_services (
+                server_id    INTEGER NOT NULL,
+                service_name TEXT    NOT NULL,
+                PRIMARY KEY (server_id, service_name)
+            );
+            CREATE TABLE IF NOT EXISTS service_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id    INTEGER NOT NULL,
+                service_name TEXT    NOT NULL,
+                status       TEXT,
+                changed_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_svc_events_server_name
+                ON service_events (server_id, service_name);
+        """)
+    except Exception:
+        pass
+
     # Migration: add blocking_queries column to db_extended_metrics
     try:
         conn.execute("ALTER TABLE db_extended_metrics ADD COLUMN blocking_queries TEXT")
@@ -3430,6 +3461,155 @@ def _check_agent_thresholds(server_id, metrics):
                 print(f"[Server Alert] Email failed for {hostname}: {e}")
 
 
+def _check_service_alerts(server_id, process_services):
+    """
+    Alert on watched critical-process status transitions.
+
+    For each watched service (watched_services table), compare the current status
+    (from this heartbeat's process_services; "down" if the watched service is
+    absent entirely) against the last recorded status in service_events. On a real
+    transition we insert a service_events row (history is always complete) and send
+    an email reusing the EXACT SMTP pattern/settings keys from _check_agent_thresholds.
+    Email send respects a per-(server,service) 24h cooldown; the event row is not
+    cooldown-gated. Never raises so the heartbeat is never broken.
+    """
+    try:
+        if not isinstance(process_services, list):
+            return
+
+        with DB_LOCK, get_db() as conn:
+            srv = conn.execute(
+                "SELECT hostname, environment FROM servers WHERE id=?", (server_id,)
+            ).fetchone()
+            if not srv:
+                return
+            watched_rows = conn.execute(
+                "SELECT service_name FROM watched_services WHERE server_id=?", (server_id,)
+            ).fetchall()
+        watched = [r["service_name"] for r in watched_rows]
+        if not watched:
+            return
+
+        hostname = srv["hostname"]
+        env      = srv["environment"] or "PROD"
+        now      = time.time()
+        ALERT_COOLDOWN = 86400  # once per 24h per (server, service)
+
+        # Map current status/ports from this heartbeat
+        current = {}
+        for entry in process_services:
+            if isinstance(entry, dict) and entry.get("name"):
+                current[entry["name"]] = entry
+
+        # Cooldown helpers (same settings-table mechanism as _check_agent_thresholds)
+        def _get_last_sent(key):
+            cached = _last_alert_sent.get(key, 0)
+            if cached > 0:
+                return cached
+            db_key = f"threshold_alert_{key[0]}_{key[1]}"
+            try:
+                with DB_LOCK, get_db() as conn:
+                    row = conn.execute("SELECT value FROM settings WHERE key=?", (db_key,)).fetchone()
+                if row:
+                    last_time = datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
+                    elapsed = (datetime.utcnow() - last_time).total_seconds()
+                    ts = now - (ALERT_COOLDOWN - elapsed) if elapsed < ALERT_COOLDOWN else 0
+                    _last_alert_sent[key] = ts
+                    return ts
+            except Exception:
+                pass
+            return 0
+
+        def _record_alert_sent(key):
+            _last_alert_sent[key] = now
+            db_key = f"threshold_alert_{key[0]}_{key[1]}"
+            now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                with DB_LOCK, get_db() as conn:
+                    conn.execute(
+                        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (db_key, now_str)
+                    )
+            except Exception:
+                pass
+
+        def _send_email(subject, body):
+            smtp_host = get_setting("smtp_host", "")
+            smtp_to   = get_setting("smtp_to_servers", "") or get_setting("smtp_to", "")
+            if not (smtp_host and smtp_to):
+                return
+            recipients = [r.strip() for r in smtp_to.split(",") if r.strip()]
+            try:
+                m = MIMEText(body)
+                m["Subject"] = subject
+                m["From"]    = get_setting("smtp_from", "")
+                m["To"]      = ", ".join(recipients)
+                smtp_port = int(get_setting("smtp_port", "25"))
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
+                    s.sendmail(m["From"], recipients, m.as_string())
+                print(f"[Service Alert] Email sent for {hostname}: {subject}")
+            except Exception as e:
+                print(f"[Service Alert] Email failed for {hostname}: {e}")
+
+        for name in watched:
+            entry = current.get(name)
+            cur_status = (entry.get("status") if entry else None) or "down"
+            if cur_status not in ("running", "down"):
+                cur_status = "down"
+            ports_info = ""
+            if entry:
+                ports = entry.get("ports") or []
+                ports_info = ",".join(str(p) for p in ports)
+
+            with DB_LOCK, get_db() as conn:
+                last_row = conn.execute(
+                    "SELECT status FROM service_events WHERE server_id=? AND service_name=? ORDER BY id DESC LIMIT 1",
+                    (server_id, name)
+                ).fetchone()
+            last_status = last_row["status"] if last_row else None
+
+            # Transition running/none -> down
+            if cur_status == "down" and last_status != "down":
+                with DB_LOCK, get_db() as conn:
+                    conn.execute(
+                        "INSERT INTO service_events (server_id, service_name, status) VALUES (?,?,?)",
+                        (server_id, name, "down")
+                    )
+                key = ("service", f"{server_id}_{name}")
+                if now - _get_last_sent(key) > ALERT_COOLDOWN:
+                    body = (
+                        f"Server: {hostname} ({env})\n"
+                        f"Service: {name}\n"
+                        f"Status: DOWN\n"
+                        f"Ports: {ports_info or '-'}\n\n"
+                        f"Time: {datetime.now()}\nDashboard: https://frm-rbautodev01:9443/"
+                    )
+                    _send_email(f"[CROIT Service Alert] {hostname} — {name} DOWN", body)
+                    _record_alert_sent(key)
+
+            # Transition down -> running (recovery)
+            elif cur_status == "running" and last_status == "down":
+                with DB_LOCK, get_db() as conn:
+                    conn.execute(
+                        "INSERT INTO service_events (server_id, service_name, status) VALUES (?,?,?)",
+                        (server_id, name, "running")
+                    )
+                key = ("service", f"{server_id}_{name}")
+                if now - _get_last_sent(key) > ALERT_COOLDOWN:
+                    body = (
+                        f"Server: {hostname} ({env})\n"
+                        f"Service: {name}\n"
+                        f"Status: RECOVERED (running)\n"
+                        f"Ports: {ports_info or '-'}\n\n"
+                        f"Time: {datetime.now()}\nDashboard: https://frm-rbautodev01:9443/"
+                    )
+                    _send_email(f"[CROIT Service Alert] {hostname} — {name} RECOVERED", body)
+                    _record_alert_sent(key)
+            # else: status unchanged — no event, no email
+    except Exception as e:
+        print(f"[Service Alert] _check_service_alerts failed: {e}")
+
+
 # ── Patch Alert ───────────────────────────────────────────────────────────────
 
 _patch_alert_sent: dict = {}   # server_id -> epoch float of last critical alert
@@ -4096,8 +4276,39 @@ def api_agent_heartbeat():
                     )
                 )
 
+            # Insert critical process-pattern services — ensure it's a list
+            proc_data = discovered_services.get("process_services", [])
+            if isinstance(proc_data, dict):
+                proc_data = [proc_data] if proc_data.get("name") else []
+            if not isinstance(proc_data, list):
+                proc_data = []
+            for proc in proc_data:
+                if not isinstance(proc, dict) or not proc.get("name"):
+                    continue
+                ports = proc.get("ports") or []
+                if isinstance(ports, list):
+                    ports_info = ",".join(str(p) for p in ports)
+                else:
+                    ports_info = str(ports)
+                conn.execute(
+                    """INSERT INTO server_services
+                       (server_id, category, name, status, process, ports_info, service_type, last_seen)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        server_id, "process",
+                        proc.get("name", ""),
+                        proc.get("status"),
+                        proc.get("pattern"),
+                        ports_info,
+                        "process",
+                        now_str_svc,
+                    )
+                )
+
     # Check thresholds and send alerts if needed
     _check_agent_thresholds(server_id, d)
+    # Check watched critical-process status transitions and alert on down/recovery
+    _check_service_alerts(server_id, (discovered_services or {}).get("process_services", []))
     # Check patch status and send critical patch alert if needed
     _check_patch_alert(server_id, d)
     # Check for EOL / high-risk software and alert once per day
@@ -4162,14 +4373,77 @@ def api_server_services(sid):
                 (sid,)
             ).fetchall()
     services = [dict(r) for r in rows]
+    # Load the stable watched set and compute 'watched' for process-category rows.
+    # (The 'watched' column on server_services is volatile — recomputed here from
+    #  the watched_services table, which survives the heartbeat DELETE/reinsert.)
+    with DB_LOCK, get_db() as conn:
+        watched_rows = conn.execute(
+            "SELECT service_name FROM watched_services WHERE server_id=?", (sid,)
+        ).fetchall()
+    watched_set = {r["service_name"] for r in watched_rows}
+    for s in services:
+        if s.get("category") == "process":
+            s["watched"] = s["name"] in watched_set
+        else:
+            s["watched"] = False
     # Build summary counts
     summary = {
         "total":      len(services),
         "ports":      len([s for s in services if s["category"] == "port"]),
         "services":   len([s for s in services if s["category"] == "service"]),
         "containers": len([s for s in services if s["category"] == "container"]),
+        "processes":  len([s for s in services if s["category"] == "process"]),
     }
     return jsonify({"services": services, "summary": summary})
+
+
+@app.route("/api/servers/<int:sid>/services/watch", methods=["POST"])
+@role_required(['admin'])
+def api_server_service_watch(sid):
+    """Arm/disarm alerting for a critical process service on this server."""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("service_name") or "").strip()
+    watched = bool(body.get("watched"))
+    if not name:
+        return jsonify({"error": "service_name is required"}), 400
+    with DB_LOCK, get_db() as conn:
+        if watched:
+            conn.execute(
+                "INSERT OR IGNORE INTO watched_services (server_id, service_name) VALUES (?,?)",
+                (sid, name)
+            )
+        else:
+            conn.execute(
+                "DELETE FROM watched_services WHERE server_id=? AND service_name=?",
+                (sid, name)
+            )
+    return jsonify({"ok": True, "service_name": name, "watched": watched})
+
+
+@app.route("/api/servers/<int:sid>/service-events", methods=["GET"])
+@role_required(['admin', 'viewer'])
+def api_server_service_events(sid):
+    """Recent status transitions for critical process services on this server."""
+    service_name = request.args.get("service_name")
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 500))
+    with DB_LOCK, get_db() as conn:
+        if service_name:
+            rows = conn.execute(
+                """SELECT id, service_name, status, changed_at FROM service_events
+                   WHERE server_id=? AND service_name=? ORDER BY id DESC LIMIT ?""",
+                (sid, service_name, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, service_name, status, changed_at FROM service_events
+                   WHERE server_id=? ORDER BY id DESC LIMIT ?""",
+                (sid, limit)
+            ).fetchall()
+    return jsonify({"events": [dict(r) for r in rows]})
 
 
 @app.route("/api/servers/<int:sid>/folder-sizes", methods=["GET"])

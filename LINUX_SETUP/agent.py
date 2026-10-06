@@ -24,6 +24,28 @@ import urllib.request
 import urllib.error
 import ssl
 
+# ── Critical Process/Service Config ───────────────────────────────────────────
+# EDIT THIS LIST to add/remove monitored on-box processes.
+# These are shell-launched java/FKRUN processes under the `fircosoft` user that
+# `systemctl list-units` never shows, so we detect them by command-line pattern.
+#   name     — display name reported in the heartbeat
+#   pattern  — substring that must appear in the process cmdline to count as a match
+#   pattern2 — (optional) a SECOND substring that must ALSO appear (both required)
+#   ports    — expected ports (shown even when PID→port can't be resolved w/o root)
+#   critical — informational flag; non-critical services never alert
+PROCESS_SERVICE_CONFIG = [
+    {"name": "AlertReview", "pattern": "tierName=AlertReview",
+     "ports": [6902, 8443], "critical": True},
+    {"name": "AlertController-Orchestrator", "pattern": "tierName=AlertControllerOrchestrator",
+     "ports": [6080, 6081], "critical": True},
+    {"name": "AlertController-CoreEngine",
+     "pattern": "/opt/fircosoft/BackEnds/bin/AlertController/CoreEngine/FKRUN",
+     "ports": [6450, 6500, 6900], "critical": True},
+    {"name": "AppDynamics-AppAgent", "pattern": "appdynamics", "pattern2": "appagent",
+     "ports": [], "critical": False},
+]
+
+
 # ── OS Info ──────────────────────────────────────────────────────────────────
 
 def get_os_info():
@@ -1067,15 +1089,88 @@ def discover_containers():
     return containers[:50]  # Cap at 50
 
 
+def discover_process_services(listening_ports):
+    """
+    Detect configured on-box processes by command-line pattern (no root needed).
+
+    Scans /proc/*/cmdline (null-separated bytes) and, for each entry in
+    PROCESS_SERVICE_CONFIG, collects the PIDs whose cmdline contains the `pattern`
+    (and `pattern2` if present). Ports are resolved by cross-referencing matched
+    PIDs against the already-collected `listening_ports` list (each entry carries
+    a `pid` and `port`), unioned with the configured expected ports so that ports
+    like 8443 still show even when PID→port can't be resolved without root.
+
+    Returns a list of dicts:
+      {"name","status":"running"|"down","pattern","pids":[...],"ports":[sorted ints],"critical":bool}
+    Never raises — returns [] on any failure so the heartbeat is never broken.
+    """
+    try:
+        listening_ports = listening_ports or []
+
+        # Build PID -> cmdline string map from /proc
+        pid_cmdlines = {}
+        for pid_dir in os.listdir("/proc"):
+            if not pid_dir.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid_dir}/cmdline", "rb") as f:
+                    raw = f.read()
+                cmdline = raw.decode("utf-8", errors="replace").replace("\0", " ").strip()
+                if cmdline:
+                    pid_cmdlines[int(pid_dir)] = cmdline
+            except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
+                continue
+
+        results = []
+        for cfg in PROCESS_SERVICE_CONFIG:
+            pattern  = cfg.get("pattern", "")
+            pattern2 = cfg.get("pattern2")
+            matched_pids = []
+            for pid, cmdline in pid_cmdlines.items():
+                if pattern and pattern not in cmdline:
+                    continue
+                if pattern2 and pattern2 not in cmdline:
+                    continue
+                matched_pids.append(pid)
+            matched_pids.sort()
+
+            status = "running" if matched_pids else "down"
+
+            # Resolve ports: configured expected ports unioned with discovered ports
+            pid_set = set(matched_pids)
+            ports = set(int(p) for p in cfg.get("ports", []) if p is not None)
+            for lp in listening_ports:
+                try:
+                    if lp.get("pid") in pid_set and lp.get("port") is not None:
+                        ports.add(int(lp["port"]))
+                except Exception:
+                    continue
+
+            results.append({
+                "name":     cfg.get("name"),
+                "status":   status,
+                "pattern":  pattern,
+                "pids":     matched_pids,
+                "ports":    sorted(ports),
+                "critical": bool(cfg.get("critical", False)),
+            })
+        return results
+    except Exception:
+        return []
+
+
 def collect_discovered_services():
     """
-    Collect all discovered services: listening ports, systemd services, containers.
-    Returns a dict with all three categories.
+    Collect all discovered services: listening ports, systemd services, containers,
+    and critical process-pattern services.
+    Returns a dict with all four categories.
     """
+    listening_ports = discover_listening_ports()
     return {
-        "listening_ports":    discover_listening_ports(),
+        "listening_ports":    listening_ports,
         "systemd_services":   discover_systemd_services(),
         "containers":         discover_containers(),
+        "process_services":   discover_process_services(listening_ports),
     }
 
 
@@ -1157,7 +1252,8 @@ def main():
                 port_count = len(cached_services.get("listening_ports", []))
                 svc_count  = len(cached_services.get("systemd_services", []))
                 ctr_count  = len(cached_services.get("containers", []))
-                print(f"[CROIT Agent v2] Discovered services: {port_count} ports, {svc_count} systemd, {ctr_count} containers")
+                proc_count = len(cached_services.get("process_services", []))
+                print(f"[CROIT Agent v2] Discovered services: {port_count} ports, {svc_count} systemd, {ctr_count} containers, {proc_count} processes")
 
             metrics = collect_metrics()
             metrics.update(cached_patch)

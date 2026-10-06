@@ -741,13 +741,68 @@ async function renderServerServicesSection(serverId) {
     const ports      = services.filter(s => s.category === 'port');
     const svcList    = services.filter(s => s.category === 'service');
     const containers = services.filter(s => s.category === 'container');
+    const processes  = services.filter(s => s.category === 'process');
+
+    const isAdmin = !!(currentUserInfo && currentUserInfo.role === 'admin');
 
     let html = `
-      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">`;
+    if (summary.processes) {
+      html += `<span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(230,69,69,.1);color:var(--red);border:1px solid var(--red)">🚨 ${summary.processes} Critical</span>`;
+    }
+    html += `
         <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(43,125,233,.1);color:var(--blue);border:1px solid var(--blue)">🔌 ${summary.ports} Ports</span>
         <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(0,169,157,.1);color:var(--green);border:1px solid var(--green)">⚙️ ${summary.services} Services</span>
         <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid #8b5cf6">🐳 ${summary.containers} Containers</span>
       </div>`;
+
+    // Critical Services (process-pattern detected) — most important, shown first
+    if (processes.length) {
+      html += `<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px;margin-top:12px">🚨 Critical Services</div>`;
+      processes.forEach(p => {
+        const running = p.status === 'running';
+        const stColor = running ? 'var(--green)' : 'var(--red)';
+        const stDot   = `<span style="width:8px;height:8px;border-radius:50%;background:${stColor};display:inline-block;margin-right:6px"></span>`;
+        const stLabel = running ? 'RUNNING' : 'DOWN';
+        const procIcon = getProcessIcon(p.process || p.name);
+        const critLabel = p.critical === false
+          ? `<span style="font-size:10px;color:var(--text3)">informational</span>`
+          : `<span style="font-size:10px;color:var(--red);font-weight:600">critical</span>`;
+        // Admin: interactive Watch toggle. Viewer: read-only armed indicator.
+        let watchCtl;
+        if (isAdmin) {
+          const next = p.watched ? 'false' : 'true';
+          const btnLabel = p.watched ? '🔔 Watching' : '🔕 Watch';
+          const btnColor = p.watched ? 'var(--green)' : 'var(--text3)';
+          watchCtl = `<button onclick="toggleServiceWatch(${serverId}, '${esc(p.name).replace(/'/g,"\\'")}', ${next})"
+            style="font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid ${btnColor};background:transparent;color:${btnColor};cursor:pointer">${btnLabel}</button>`;
+        } else {
+          watchCtl = p.watched
+            ? `<span style="font-size:11px;color:var(--green)">🔔 Alerts armed</span>`
+            : `<span style="font-size:11px;color:var(--text3)">— not watched</span>`;
+        }
+        const evId = `svc-events-${serverId}-${btoa(unescape(encodeURIComponent(p.name))).replace(/[^a-zA-Z0-9]/g,'')}`;
+        html += `
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+              <div style="display:flex;align-items:center;gap:8px">
+                ${stDot}<strong>${procIcon} ${esc(p.name)}</strong>
+                <span style="color:${stColor};font-weight:600;font-size:11px">${stLabel}</span>
+                ${critLabel}
+              </div>
+              <div style="display:flex;align-items:center;gap:12px">
+                <span style="font-size:11px;color:var(--text3)">Ports: ${esc(p.ports_info || '–')}</span>
+                ${watchCtl}
+              </div>
+            </div>
+            <div style="margin-top:6px">
+              <a href="#" onclick="loadServiceEvents(${serverId}, '${esc(p.name).replace(/'/g,"\\'")}', '${evId}'); return false;"
+                 style="font-size:10px;color:var(--blue)">▸ recent events</a>
+              <div id="${evId}" style="display:none;margin-top:6px"></div>
+            </div>
+          </div>`;
+      });
+    }
 
     // Listening Ports Table
     if (ports.length) {
@@ -821,6 +876,65 @@ async function renderServerServicesSection(serverId) {
     return html;
   } catch(e) {
     return `<div style="font-size:12px;color:var(--text3)">Could not load discovered services.</div>`;
+  }
+}
+
+// Arm/disarm alerting for a critical process service, then refresh the section.
+async function toggleServiceWatch(serverId, serviceName, watched) {
+  try {
+    const res = await fetch(`${API}/api/servers/${serverId}/services/watch`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({service_name: serviceName, watched: watched})
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast(err.error || 'Failed to update watch state', 'error');
+      return;
+    }
+    toast(watched ? `Watching ${serviceName} — alerts armed` : `Stopped watching ${serviceName}`, 'success');
+    const html = await renderServerServicesSection(serverId);
+    const svcEl = document.getElementById(`srv-services-section-${serverId}`);
+    if (svcEl) svcEl.innerHTML = html;
+  } catch(e) {
+    toast('Could not update watch state', 'error');
+  }
+}
+
+// Fetch and render recent status transitions for a single critical service.
+async function loadServiceEvents(serverId, serviceName, elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  // Toggle collapse if already shown
+  if (el.style.display !== 'none' && el.innerHTML.trim()) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = `<div style="font-size:11px;color:var(--text3)">Loading…</div>`;
+  try {
+    const res = await fetch(`${API}/api/servers/${serverId}/service-events?service_name=${encodeURIComponent(serviceName)}&limit=10`, {credentials:'include'});
+    if (!res.ok) { el.innerHTML = `<div style="font-size:11px;color:var(--text3)">Could not load events.</div>`; return; }
+    const data = await res.json();
+    const events = data.events || [];
+    if (!events.length) {
+      el.innerHTML = `<div style="font-size:11px;color:var(--text3)">No status changes recorded yet.</div>`;
+      return;
+    }
+    let h = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Status</th></tr></thead><tbody>`;
+    events.forEach(ev => {
+      const isDown = (ev.status || '').toLowerCase() === 'down';
+      const c = isDown ? 'var(--red)' : 'var(--green)';
+      h += `<tr>
+        <td style="font-size:11px;color:var(--text3)">${ev.changed_at ? new Date(ev.changed_at+'Z').toLocaleString() : '–'}</td>
+        <td><span style="color:${c};font-weight:600;font-size:11px;text-transform:uppercase">${esc(ev.status || '–')}</span></td>
+      </tr>`;
+    });
+    h += `</tbody></table></div>`;
+    el.innerHTML = h;
+  } catch(e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text3)">Could not load events.</div>`;
   }
 }
 

@@ -203,4 +203,21 @@ print('Password updated')
 
 ---
 
+## Critical Service Monitoring — TCP backstop (operator action)
+
+The agent/collector detects the Fircosoft critical processes (AlertReview,
+AlertController-Orchestrator, AlertController-CoreEngine, AppDynamics-AppAgent) by
+command-line pattern and alerts when a *watched* service goes down. As a
+network-reachability backstop for the frontend-facing AlertReview port, an operator
+should **manually add a TCP monitor** against port **8443** in both environments:
+
+- **UAT:** `cro-r1fxacruat:8443`
+- **PROD:** the prod application server on `:8443`
+
+Add these from the dashboard (Monitors → add TCP monitor). This is intentionally a
+manual operator step — the application does not auto-create these monitors and does
+not hard-code the hostnames anywhere in its logic.
+
+---
+
 *Created: April 2026 | Server: frm-rbautodev01 | Maintained by: f5151422*

@@ -4,6 +4,18 @@
 # Outputs JSON to stdout — designed to be run via Ansible SSH
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Critical Process/Service Config — EDIT THIS BLOCK to add/remove monitored procs
+# ═══════════════════════════════════════════════════════════════════════════════
+# These are shell-launched java/FKRUN processes under the `fircosoft` user that
+# `systemctl` never lists, so we detect them by command-line pattern via `ps`.
+# Format (one per line):  name|pattern|expected_ports(comma-sep)|critical(true|false)
+# `pattern` is matched with `grep -F` (fixed string) against `ps -eo pid,args`.
+PROCESS_SERVICE_CONFIG="AlertReview|tierName=AlertReview|6902,8443|true
+AlertController-Orchestrator|tierName=AlertControllerOrchestrator|6080,6081|true
+AlertController-CoreEngine|/opt/fircosoft/BackEnds/bin/AlertController/CoreEngine/FKRUN|6450,6500,6900|true
+AppDynamics-AppAgent|appdynamics|{EMPTY}|false"
+
 # OS Info
 OS_NAME=$(grep -m1 '^NAME=' /etc/os-release 2>/dev/null | cut -d'"' -f2)
 OS_VERSION=$(grep -m1 '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'"' -f2)
@@ -130,7 +142,54 @@ while IFS=$'\t' read -r NAME VERSION VENDOR; do
 done < <(rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\n' 2>/dev/null | sort)
 SOFTWARE="$SOFTWARE]"
 
+# Critical process/service detection (by command-line pattern, no root needed)
+PROCESS_SERVICES="["
+FIRST=1
+while IFS='|' read -r PS_NAME PS_PATTERN PS_PORTS PS_CRITICAL; do
+  [ -z "$PS_NAME" ] && continue
+  # Collect matching PIDs via ps (exclude the grep itself)
+  PS_PIDS=$(ps -eo pid,args --no-headers 2>/dev/null | grep -F -- "$PS_PATTERN" | grep -v 'grep' | awk '{print $1}')
+  # Build the PIDs JSON array and status
+  PIDS_JSON="["
+  PID_FIRST=1
+  PID_COUNT=0
+  for p in $PS_PIDS; do
+    if [ "$PID_FIRST" -eq 0 ]; then PIDS_JSON="$PIDS_JSON,"; fi
+    PIDS_JSON="$PIDS_JSON$p"
+    PID_FIRST=0
+    PID_COUNT=$((PID_COUNT + 1))
+  done
+  PIDS_JSON="$PIDS_JSON]"
+  if [ "$PID_COUNT" -ge 1 ]; then PS_STATUS="running"; else PS_STATUS="down"; fi
+
+  # Build the ports JSON array from the configured expected ports.
+  # Best-effort: also add any ss -tlnp port whose PID is in the matched set.
+  PORTS_JSON="["
+  PORT_FIRST=1
+  if [ "$PS_PORTS" != "{EMPTY}" ] && [ -n "$PS_PORTS" ]; then
+    OLD_IFS="$IFS"; IFS=','
+    for prt in $PS_PORTS; do
+      prt=$(echo "$prt" | tr -d ' ')
+      [ -z "$prt" ] && continue
+      if [ "$PORT_FIRST" -eq 0 ]; then PORTS_JSON="$PORTS_JSON,"; fi
+      PORTS_JSON="$PORTS_JSON$prt"
+      PORT_FIRST=0
+    done
+    IFS="$OLD_IFS"
+  fi
+  PORTS_JSON="$PORTS_JSON]"
+
+  # JSON-escape the pattern
+  PS_PATTERN_ESC=$(echo "$PS_PATTERN" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  if [ "$FIRST" -eq 0 ]; then PROCESS_SERVICES="$PROCESS_SERVICES,"; fi
+  PROCESS_SERVICES="$PROCESS_SERVICES{\"name\":\"$PS_NAME\",\"status\":\"$PS_STATUS\",\"pattern\":\"$PS_PATTERN_ESC\",\"pids\":$PIDS_JSON,\"ports\":$PORTS_JSON,\"critical\":$PS_CRITICAL}"
+  FIRST=0
+done <<EOF
+$PROCESS_SERVICE_CONFIG
+EOF
+PROCESS_SERVICES="$PROCESS_SERVICES]"
+
 # Output JSON
 cat << ENDJSON
-{"os_name":"$OS_NAME","os_version":"$OS_VERSION","kernel":"$KERNEL","cpu_pct":$CPU_PCT,"cpu_cores":$CPU_CORES,"cpu_threads":$CPU_THREADS,"ram_total_gb":$RAM_TOTAL_GB,"ram_used_gb":$RAM_USED_GB,"ram_pct":$RAM_PCT,"disk_total_gb":$ROOT_TOTAL,"disk_used_gb":$ROOT_USED,"disk_pct":$ROOT_PCT,"disk_mounts":$DISK_MOUNTS,"uptime_sec":$UPTIME_SEC,"load_1m":$LOAD_1M,"load_5m":$LOAD_5M,"load_15m":$LOAD_15M,"process_count":$PROC_COUNT,"installed_software":$SOFTWARE,"discovered_services":{"listening_ports":$PORTS,"systemd_services":$SERVICES,"containers":[]}}
+{"os_name":"$OS_NAME","os_version":"$OS_VERSION","kernel":"$KERNEL","cpu_pct":$CPU_PCT,"cpu_cores":$CPU_CORES,"cpu_threads":$CPU_THREADS,"ram_total_gb":$RAM_TOTAL_GB,"ram_used_gb":$RAM_USED_GB,"ram_pct":$RAM_PCT,"disk_total_gb":$ROOT_TOTAL,"disk_used_gb":$ROOT_USED,"disk_pct":$ROOT_PCT,"disk_mounts":$DISK_MOUNTS,"uptime_sec":$UPTIME_SEC,"load_1m":$LOAD_1M,"load_5m":$LOAD_5M,"load_15m":$LOAD_15M,"process_count":$PROC_COUNT,"installed_software":$SOFTWARE,"discovered_services":{"listening_ports":$PORTS,"systemd_services":$SERVICES,"containers":[],"process_services":$PROCESS_SERVICES}}
 ENDJSON
