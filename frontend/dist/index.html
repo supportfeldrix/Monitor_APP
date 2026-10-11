@@ -179,6 +179,26 @@ select.form-control option{background:var(--surface)}
 .tf-custom input[type=datetime-local]:focus{border-color:var(--fnb-teal);box-shadow:0 0 0 3px rgba(0,169,157,.12)}
 .tf-sep{color:var(--text3);font-size:12px}
 
+/* APPLICATION TABS */
+.app-tabs{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:10px;margin-bottom:16px;border-bottom:1px solid var(--border)}
+.app-tabs::-webkit-scrollbar{height:6px}
+.app-tabs::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.app-tab{display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:all .15s;font-weight:600;white-space:nowrap}
+.app-tab:hover{border-color:var(--fnb-teal);color:var(--fnb-teal)}
+.app-tab.active{background:var(--fnb-teal);border-color:var(--fnb-teal);color:#fff}
+.app-tab .app-tab-count{font-size:11px;font-weight:600;background:rgba(0,0,0,.08);color:inherit;padding:1px 7px;border-radius:10px}
+.app-tab.active .app-tab-count{background:rgba(255,255,255,.25)}
+.app-tab .app-tab-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+/* Linked servers section */
+.linked-servers{margin-top:4px;margin-bottom:20px}
+.linked-servers-title{font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.srv-card{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;box-shadow:var(--shadow)}
+.srv-card .srv-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.srv-card .srv-main{flex:1;min-width:0}
+.srv-card .srv-host{font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srv-card .srv-meta{font-size:11px;color:var(--text3);margin-top:2px}
+.srv-card .srv-counts{font-size:11px;color:var(--text3);white-space:nowrap}
+
 /* TABLES */
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
@@ -561,6 +581,7 @@ canvas{max-width:100%}
         <div class="stat-box"><div class="sv val-yellow" id="ds-paused">-</div><div class="sl">Paused</div></div>
         <div class="stat-box"><div class="sv val-blue" id="ds-avg">-</div><div class="sl">Avg Uptime</div></div>
       </div>
+      <div id="dash-app-tabs" class="app-tabs"></div>
       <div class="grid-2">
         <div id="dash-monitor-list"><div class="loading-center"><div class="spinner"></div>&nbsp; Loading monitors...</div></div>
         <div id="dash-detail">

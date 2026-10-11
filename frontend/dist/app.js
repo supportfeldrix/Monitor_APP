@@ -11,6 +11,8 @@ let dashTo        = null;
 let selectedMid   = null;
 let refreshTimer  = null;
 let collapsedGroups = {};  // groupName -> true/false
+let selectedApp   = null;  // dashboard application tab (a group_name); null until first app auto-selected
+let dashServers   = [];    // cache of servers for the dashboard linked-server lookup
 let spPreset      = '24h';
 let spFrom        = null;
 let spTo          = null;
@@ -346,6 +348,11 @@ async function refreshDashboard() {
   try {
     const res  = await fetch(`${API}/api/status${dashQS()}`, {credentials:'include'});
     allMonitors = await res.json();
+    // Load servers for the linked-servers section (best effort — don't block the dashboard)
+    try {
+      const sres = await fetch(`${API}/api/servers`, {credentials:'include'});
+      if (sres.ok) dashServers = await sres.json();
+    } catch(e) { /* servers optional */ }
     renderSidebar(allMonitors);
     renderDashboard(allMonitors);
     document.getElementById('dash-last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -374,12 +381,250 @@ function renderSidebar(monitors) {
   }).join('');
 }
 
+// Returns the "application" (group) name for a monitor; blank → 'General'
+function appOf(m) {
+  return m.group_name && m.group_name.trim() ? m.group_name.trim() : 'General';
+}
+
+// Sort helper: keep 'General' last, otherwise alphabetical
+function appSort(a, b) {
+  if (a === 'General') return 1;
+  if (b === 'General') return -1;
+  return a.localeCompare(b);
+}
+
+// Switch the selected application tab
+function selectApp(app) {
+  selectedApp = app;
+  renderDashboard(allMonitors);
+}
+
+// Render the application tab bar from the current monitor set
+function renderAppTabs(monitors) {
+  const el = document.getElementById('dash-app-tabs');
+  if (!el) return;
+
+  const groups = {};
+  monitors.forEach(m => {
+    const g = appOf(m);
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(m);
+  });
+  const groupNames = Object.keys(groups).sort(appSort);
+
+  // Auto-select the first app if none selected or selected app vanished
+  if (!selectedApp || !groups[selectedApp]) {
+    selectedApp = groupNames[0] || null;
+  }
+
+  const tab = (key, label, count, mons) => {
+    const down = mons ? mons.filter(m => m.current_status?.status === 0 && m.enabled).length : 0;
+    const anyDown = down > 0;
+    const dot = `<span class="app-tab-dot" style="background:${anyDown ? 'var(--red)' : 'var(--green)'}"></span>`;
+    return `<button class="app-tab ${selectedApp===key?'active':''}" onclick="selectApp('${esc(key).replace(/'/g,"\\'")}')">
+      ${dot}<span>${esc(label)}</span><span class="app-tab-count">${count}</span>
+    </button>`;
+  };
+
+  let html = '';
+  groupNames.forEach(g => { html += tab(g, g, groups[g].length, groups[g]); });
+  el.innerHTML = html;
+}
+
+// Render a single monitor card (shared by grouped + filtered views)
+function renderMonitorCard(m) {
+  const st       = !m.enabled ? 'paused' : m.current_status ? (m.current_status.status ? 'up' : 'down') : 'pending';
+  const upPct    = m.uptime_pct !== null ? m.uptime_pct.toFixed(2)+'%' : '–';
+  const lat      = m.avg_latency !== null ? m.avg_latency+'ms' : '–';
+  const badgeCls = {up:'badge-up',down:'badge-down',paused:'badge-paused',pending:'badge-pending'}[st];
+  const badgeTxt = {up:'Up',down:'Down',paused:'Paused',pending:'Pending'}[st];
+  const bars     = renderHBBars(m.timeline, m.from_dt, m.to_dt);
+  return `<div class="monitor-card ${selectedMid===m.id?'selected':''}" onclick="selectMonitor(${m.id})">
+    <div class="mc-header">
+      <div class="dot ${st}" style="width:10px;height:10px"></div>
+      <div style="flex:1;min-width:0">
+        <div class="mc-name">${esc(m.name)}</div>
+        <div class="mc-url">${esc(m.url)}</div>
+      </div>
+      <span class="badge ${badgeCls}">${badgeTxt}</span>
+      <div style="display:flex;gap:4px;margin-left:8px">
+        <button class="btn btn-secondary btn-sm btn-icon" onclick="event.stopPropagation();openEditMonitorModal(${m.id})" title="Edit"><svg width="13" height="13"><use href="#ic-edit"/></svg></button>
+        <button class="btn btn-secondary btn-sm btn-icon" onclick="event.stopPropagation();toggleMonitor(${m.id})" title="${m.enabled?'Pause':'Resume'}">${m.enabled?'<svg width="13" height="13"><use href="#ic-pause"/></svg>':'<svg width="13" height="13"><use href="#ic-play"/></svg>'}</button>
+        <button class="btn btn-danger btn-sm btn-icon" onclick="event.stopPropagation();confirmDelete('monitor',${m.id},'${esc(m.name)}')" title="Delete"><svg width="13" height="13"><use href="#ic-trash"/></svg></button>
+      </div>
+    </div>
+    <div class="mc-meta">
+      <div class="mc-stat"><div class="val ${m.uptime_pct>=99?'val-green':m.uptime_pct>=90?'val-blue':'val-red'}">${upPct}</div><div class="lbl">Uptime</div></div>
+      <div class="mc-stat"><div class="val val-blue">${lat}</div><div class="lbl">Avg Latency</div></div>
+      <div class="mc-stat"><div class="val">${m.total_checks||0}</div><div class="lbl">Checks</div></div>
+    </div>
+    ${bars}
+  </div>`;
+}
+
+// Render the "Linked Servers" section for a selected application.
+// A server belongs to the app if any of its linked monitors has that group_name.
+function renderLinkedServers(app) {
+  if (!dashServers || !dashServers.length) {
+    return `<div class="linked-servers">
+      <div class="linked-servers-title"><svg width="14" height="14" style="color:var(--fnb-teal)"><use href="#ic-dashboard"/></svg> Linked Servers</div>
+      <div style="font-size:12px;color:var(--text3)">No servers linked to this application.</div>
+    </div>`;
+  }
+
+  const matches = dashServers.filter(s =>
+    Array.isArray(s.monitors) && s.monitors.some(mon => (mon.group_name && mon.group_name.trim() ? mon.group_name.trim() : 'General') === app)
+  );
+
+  let body;
+  if (!matches.length) {
+    body = `<div style="font-size:12px;color:var(--text3)">No servers linked to this application.</div>`;
+  } else {
+    const healthColor = { healthy:'var(--green)', degraded:'var(--yellow)', critical:'var(--red)', pending:'var(--blue)', unknown:'var(--text3)' };
+    body = matches.map(s => {
+      const col = healthColor[s.health] || 'var(--text3)';
+      const meta = [s.environment, s.role, s.ip_address, s.os].filter(Boolean).map(esc).join(' · ');
+      return `<div class="srv-card">
+        <span class="srv-dot" style="background:${col}"></span>
+        <div class="srv-main">
+          <div class="srv-host">${esc(s.hostname)}</div>
+          <div class="srv-meta">${meta || '&nbsp;'}</div>
+        </div>
+        <div class="srv-counts">${s.up_count||0} up · ${s.down_count||0} down · ${s.total_monitors||0} total</div>
+      </div>`;
+    }).join('');
+  }
+
+  return `<div class="linked-servers">
+    <div class="linked-servers-title"><svg width="14" height="14" style="color:var(--fnb-teal)"><use href="#ic-dashboard"/></svg> Linked Servers</div>
+    ${body}
+  </div>`;
+}
+
+// Full detail panel for a single monitor, used stacked in the application view.
+// Uses per-monitor element IDs so multiple panels coexist on one page.
+function renderDetailPanel(m) {
+  const st     = !m.enabled ? 'paused' : m.current_status ? (m.current_status.status ? 'up' : 'down') : 'pending';
+  const badgeCls = {up:'badge-up',down:'badge-down',paused:'badge-paused',pending:'badge-pending'}[st];
+  const badgeTxt = {up:'Operational',down:'Down',paused:'Paused',pending:'Pending'}[st];
+  const upPct  = m.uptime_pct !== null ? m.uptime_pct.toFixed(2)+'%' : '–';
+  const lat    = m.avg_latency !== null ? m.avg_latency+'ms' : '–';
+  const lastCheck = m.current_status?.checked_at ? new Date(m.current_status.checked_at+'Z').toLocaleString() : '–';
+  const typeIconId = {http:'ic-http',https:'ic-http',keyword:'ic-key',tcp:'ic-tcp'};
+  const iconId = typeIconId[m.type] || 'ic-http';
+  const icon = `<svg width="20" height="20" style="color:var(--fnb-teal)"><use href="#${iconId}"/></svg>`;
+  const tags = (m.tags||'').split(',').filter(Boolean).map(t=>`<span class="tag">${esc(t.trim())}</span>`).join('');
+
+  return `
+    <div class="detail-panel" style="margin-bottom:16px">
+      <div class="detail-header">
+        <div class="detail-icon">${icon}</div>
+        <div class="detail-title" style="flex:1">
+          <h2>${esc(m.name)} <span class="badge ${badgeCls}" style="font-size:11px">${badgeTxt}</span></h2>
+          <div class="url"><a href="${esc(m.url)}" target="_blank" style="color:var(--blue)">${esc(m.url)}</a></div>
+          ${tags ? `<div style="margin-top:6px">${tags}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="openEditMonitorModal(${m.id})"><svg width="13" height="13"><use href="#ic-edit"/></svg> Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="toggleMonitor(${m.id})">${m.enabled?'<svg width="13" height="13"><use href="#ic-pause"/></svg> Pause':'<svg width="13" height="13"><use href="#ic-play"/></svg> Resume'}</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDelete('monitor',${m.id},'${esc(m.name)}')"><svg width="13" height="13"><use href="#ic-trash"/></svg></button>
+        </div>
+      </div>
+      <div class="detail-stats">
+        <div class="stat-box"><div class="sv ${m.uptime_pct>=99?'val-green':m.uptime_pct>=90?'val-blue':'val-red'}">${upPct}</div><div class="sl">Uptime</div></div>
+        <div class="stat-box"><div class="sv val-blue">${lat}</div><div class="sl">Avg Latency</div></div>
+        <div class="stat-box"><div class="sv">${m.total_checks||0}</div><div class="sl">Total Checks</div></div>
+        <div class="stat-box"><div class="sv val-green">${m.up_checks||0}</div><div class="sl">Up Checks</div></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;font-weight:600">Heartbeat Timeline</div>
+        ${renderHBBars(m.timeline, m.from_dt, m.to_dt)}
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">
+        <span>Type: <strong style="color:var(--text)">${m.type.toUpperCase()}</strong></span> &nbsp;·&nbsp;
+        <span>Interval: <strong style="color:var(--text)">${m.interval}s</strong></span> &nbsp;·&nbsp;
+        <span>Retries: <strong style="color:var(--text)">${m.retries}</strong></span> &nbsp;·&nbsp;
+        <span>Last check: <strong style="color:var(--text)">${lastCheck}</strong></span>
+      </div>
+      ${m.description ? `<div style="color:var(--text2);font-size:13px;margin-bottom:16px">${esc(m.description)}</div>` : ''}
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;font-weight:600">Recent Heartbeats</div>
+        <div id="hb-table-wrap-${m.id}"><div class="loading-center"><div class="spinner"></div></div></div>
+      </div>
+      <div style="margin-top:20px;padding:16px;background:var(--surface2);border-radius:var(--radius);border:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:10px;text-transform:uppercase;font-weight:600">📋 Audit Report</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="downloadAuditReport(${m.id},'7d')">Last 7 Days</button>
+          <button class="btn btn-secondary btn-sm" onclick="downloadAuditReport(${m.id},'30d')">Last 30 Days</button>
+          <button class="btn btn-secondary btn-sm" onclick="downloadAuditReport(${m.id},'90d')">Last 90 Days</button>
+          <span style="color:var(--text3);font-size:11px;margin:0 4px">or</span>
+          <input type="date" id="audit-from-${m.id}" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)">
+          <span style="font-size:11px;color:var(--text3)">to</span>
+          <input type="date" id="audit-to-${m.id}" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)">
+          <button class="btn btn-primary btn-sm" onclick="downloadAuditReportCustom(${m.id})">📥 Download</button>
+        </div>
+        <div id="audit-status-${m.id}" style="font-size:11px;color:var(--text3);margin-top:8px"></div>
+      </div>
+    </div>`;
+}
+
+// Build the recent-heartbeats table HTML (shared markup)
+function heartbeatTableHTML(hbs) {
+  if (!hbs.length) return '<div style="color:var(--text3);font-size:13px;padding:12px 0">No heartbeats recorded yet.</div>';
+  return `<div class="table-wrap" style="max-height:220px;overflow-y:auto">
+    <table>
+      <thead><tr><th>Status</th><th>Latency</th><th>Message</th><th>Time</th></tr></thead>
+      <tbody>${hbs.map(h => `<tr>
+        <td><span class="badge ${h.status?'badge-up':'badge-down'}">${h.status?'Up':'Down'}</span></td>
+        <td>${h.latency_ms !== null ? h.latency_ms+'ms' : '–'}</td>
+        <td style="color:var(--text3);font-size:12px">${esc(h.msg||'')}</td>
+        <td style="color:var(--text3);font-size:12px">${new Date(h.checked_at+'Z').toLocaleString()}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+// Fetch and fill recent heartbeats for every monitor currently shown in the app view
+async function loadAppHeartbeats(monitors) {
+  await Promise.all(monitors.map(async m => {
+    const wrap = document.getElementById('hb-table-wrap-' + m.id);
+    if (!wrap) return;
+    try {
+      const res = await fetch(`${API}/api/monitors/${m.id}/heartbeats?limit=50`, {credentials:'include'});
+      const hbs = await res.json();
+      // Element may have been replaced by a re-render; re-query before writing
+      const target = document.getElementById('hb-table-wrap-' + m.id);
+      if (target) target.innerHTML = heartbeatTableHTML(hbs);
+    } catch(e) {
+      const target = document.getElementById('hb-table-wrap-' + m.id);
+      if (target) target.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">Could not load heartbeats.</div>';
+    }
+  }));
+}
+
 function renderDashboard(monitors) {
-  const total  = monitors.length;
-  const up     = monitors.filter(m => m.current_status?.status === 1 && m.enabled).length;
-  const down   = monitors.filter(m => m.current_status?.status === 0 && m.enabled).length;
-  const paused = monitors.filter(m => !m.enabled).length;
-  const uptimes = monitors.map(m => m.uptime_pct).filter(v => v !== null);
+  renderAppTabs(monitors);  // auto-selects the first app and normalises selectedApp
+
+  if (!monitors.length) {
+    document.getElementById('ds-total').textContent  = 0;
+    document.getElementById('ds-up').textContent     = 0;
+    document.getElementById('ds-down').textContent   = 0;
+    document.getElementById('ds-paused').textContent = 0;
+    document.getElementById('ds-avg').textContent    = '–';
+    document.getElementById('dash-monitor-list').innerHTML =
+      `<div class="empty-state"><svg style="width:48px;height:48px;margin:0 auto 16px;display:block;opacity:.3"><use href="#ic-monitor"/></svg><p>No monitors yet.</p><button class="btn btn-primary" onclick="openAddMonitorModal()">Add your first monitor</button></div>`;
+    document.getElementById('dash-detail').style.display = 'none';
+    return;
+  }
+
+  // Monitors for the currently selected application
+  const viewMonitors = monitors.filter(m => appOf(m) === selectedApp);
+
+  // Stat cards reflect the selected application only
+  const total  = viewMonitors.length;
+  const up     = viewMonitors.filter(m => m.current_status?.status === 1 && m.enabled).length;
+  const down   = viewMonitors.filter(m => m.current_status?.status === 0 && m.enabled).length;
+  const paused = viewMonitors.filter(m => !m.enabled).length;
+  const uptimes = viewMonitors.map(m => m.uptime_pct).filter(v => v !== null);
   const avg    = uptimes.length ? (uptimes.reduce((a,b)=>a+b,0)/uptimes.length).toFixed(1)+'%' : '–';
 
   document.getElementById('ds-total').textContent  = total;
@@ -388,80 +633,23 @@ function renderDashboard(monitors) {
   document.getElementById('ds-paused').textContent = paused;
   document.getElementById('ds-avg').textContent    = avg;
 
-  if (!monitors.length) {
-    document.getElementById('dash-monitor-list').innerHTML =
-      `<div class="empty-state"><svg style="width:48px;height:48px;margin:0 auto 16px;display:block;opacity:.3"><use href="#ic-monitor"/></svg><p>No monitors yet.</p><button class="btn btn-primary" onclick="openAddMonitorModal()">Add your first monitor</button></div>`;
+  // Application view: full-width stack of complete detail panels, one per route.
+  // Hide the old right-hand single-detail column and span the list full width.
+  document.getElementById('dash-detail').style.display = 'none';
+  const listEl = document.getElementById('dash-monitor-list');
+  if (listEl.parentElement) listEl.parentElement.style.gridTemplateColumns = '1fr';
+
+  let html = renderLinkedServers(selectedApp);
+  if (!viewMonitors.length) {
+    html += `<div class="empty-state" style="padding:24px"><p>No monitors in this application.</p></div>`;
+    listEl.innerHTML = html;
     return;
   }
+  html += viewMonitors.map(renderDetailPanel).join('');
+  listEl.innerHTML = html;
 
-  // Group monitors by group_name
-  const groups = {};
-  monitors.forEach(m => {
-    const g = m.group_name && m.group_name.trim() ? m.group_name.trim() : 'General';
-    if (!groups[g]) groups[g] = [];
-    groups[g].push(m);
-  });
-
-  const groupNames = Object.keys(groups).sort((a,b) => {
-    if (a === 'General') return 1;
-    if (b === 'General') return -1;
-    return a.localeCompare(b);
-  });
-
-  let html = '';
-  groupNames.forEach(groupName => {
-    const groupMonitors = groups[groupName];
-    const groupUp   = groupMonitors.filter(m => m.current_status?.status === 1 && m.enabled).length;
-    const groupDown = groupMonitors.filter(m => m.current_status?.status === 0 && m.enabled).length;
-    const groupColor = groupDown > 0 ? 'var(--red)' : 'var(--green)';
-    const safeId = groupName.replace(/[^a-zA-Z0-9]/g, '_');
-    const isCollapsed = collapsedGroups[safeId] || false;
-    const bodyDisplay = isCollapsed ? 'none' : '';
-    const arrowRotate = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
-
-    html += `<div style="margin-bottom:20px">
-      <div onclick="toggleGroup('${safeId}')" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 10px;border-bottom:2px solid var(--border);cursor:pointer;border-radius:6px 6px 0 0;user-select:none;transition:background .15s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='transparent'">
-        <svg id="group-arrow-${safeId}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2.5" stroke-linecap="round" style="flex-shrink:0;transition:transform .2s;transform:${arrowRotate}"><polyline points="6 9 12 15 18 9"/></svg>
-        <span style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.06em">${esc(groupName)}</span>
-        <span style="font-size:11px;color:${groupColor};font-weight:600">${groupUp} up${groupDown > 0 ? ' &middot; '+groupDown+' down' : ''}</span>
-        <span style="font-size:11px;color:var(--text3);margin-left:auto">${groupMonitors.length} monitor${groupMonitors.length!==1?'s':''}</span>
-      </div>
-      <div id="group-body-${safeId}" style="display:${bodyDisplay}">`;
-
-    groupMonitors.forEach(m => {
-      const st       = !m.enabled ? 'paused' : m.current_status ? (m.current_status.status ? 'up' : 'down') : 'pending';
-      const upPct    = m.uptime_pct !== null ? m.uptime_pct.toFixed(2)+'%' : '–';
-      const lat      = m.avg_latency !== null ? m.avg_latency+'ms' : '–';
-      const badgeCls = {up:'badge-up',down:'badge-down',paused:'badge-paused',pending:'badge-pending'}[st];
-      const badgeTxt = {up:'Up',down:'Down',paused:'Paused',pending:'Pending'}[st];
-      const bars     = renderHBBars(m.timeline, m.from_dt, m.to_dt);
-      html += `<div class="monitor-card ${selectedMid===m.id?'selected':''}" onclick="selectMonitor(${m.id})">
-        <div class="mc-header">
-          <div class="dot ${st}" style="width:10px;height:10px"></div>
-          <div style="flex:1;min-width:0">
-            <div class="mc-name">${esc(m.name)}</div>
-            <div class="mc-url">${esc(m.url)}</div>
-          </div>
-          <span class="badge ${badgeCls}">${badgeTxt}</span>
-          <div style="display:flex;gap:4px;margin-left:8px">
-            <button class="btn btn-secondary btn-sm btn-icon" onclick="event.stopPropagation();openEditMonitorModal(${m.id})" title="Edit"><svg width="13" height="13"><use href="#ic-edit"/></svg></button>
-            <button class="btn btn-secondary btn-sm btn-icon" onclick="event.stopPropagation();toggleMonitor(${m.id})" title="${m.enabled?'Pause':'Resume'}">${m.enabled?'<svg width="13" height="13"><use href="#ic-pause"/></svg>':'<svg width="13" height="13"><use href="#ic-play"/></svg>'}</button>
-            <button class="btn btn-danger btn-sm btn-icon" onclick="event.stopPropagation();confirmDelete('monitor',${m.id},'${esc(m.name)}')" title="Delete"><svg width="13" height="13"><use href="#ic-trash"/></svg></button>
-          </div>
-        </div>
-        <div class="mc-meta">
-          <div class="mc-stat"><div class="val ${m.uptime_pct>=99?'val-green':m.uptime_pct>=90?'val-blue':'val-red'}">${upPct}</div><div class="lbl">Uptime</div></div>
-          <div class="mc-stat"><div class="val val-blue">${lat}</div><div class="lbl">Avg Latency</div></div>
-          <div class="mc-stat"><div class="val">${m.total_checks||0}</div><div class="lbl">Checks</div></div>
-        </div>
-        ${bars}
-      </div>`;
-    });
-    html += `</div></div>`;  // close group-body + group wrapper
-  });
-
-  document.getElementById('dash-monitor-list').innerHTML = html;
-  if (selectedMid) renderDetail(monitors.find(m => m.id === selectedMid));
+  // Fill recent-heartbeat tables for each panel
+  loadAppHeartbeats(viewMonitors);
 }
 
 function renderHBBars(timeline, fromDt, toDt) {
@@ -478,19 +666,30 @@ function renderHBBars(timeline, fromDt, toDt) {
 
 async function selectMonitor(id) {
   selectedMid = id;
-  document.querySelectorAll('.monitor-card').forEach(c => c.classList.remove('selected'));
-  document.querySelectorAll('.sidebar-monitor-item').forEach(c => c.classList.remove('active'));
-  document.querySelectorAll(`.monitor-card`).forEach(c => { if (c.onclick && c.onclick.toString().includes(`(${id})`)) c.classList.add('selected'); });
-
   const m = allMonitors.find(x => x.id === id);
-  if (m) renderDetail(m);
+  if (!m) return;
 
-  // Fetch fresh heartbeats for detail
-  try {
-    const res = await fetch(`${API}/api/monitors/${id}/heartbeats?limit=50`, {credentials:'include'});
-    const hbs = await res.json();
-    renderHeartbeatTable(hbs);
-  } catch(e) {}
+  // Switch to this monitor's application so its stacked detail panel is visible
+  const app = appOf(m);
+  if (app !== selectedApp) {
+    selectedApp = app;
+    renderDashboard(allMonitors);
+  }
+
+  // Highlight the sidebar entry
+  document.querySelectorAll('.sidebar-monitor-item').forEach(c => c.classList.remove('active'));
+
+  // Scroll the matching detail panel into view (allow the DOM to render first)
+  setTimeout(() => {
+    const wrap = document.getElementById('hb-table-wrap-' + id);
+    const panel = wrap ? wrap.closest('.detail-panel') : null;
+    if (panel) {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      panel.style.transition = 'box-shadow .3s';
+      panel.style.boxShadow = '0 0 0 2px var(--fnb-teal)';
+      setTimeout(() => { panel.style.boxShadow = ''; }, 1500);
+    }
+  }, 60);
 }
 
 function renderDetail(m) {

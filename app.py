@@ -2848,6 +2848,7 @@ def _server_with_health(server, conn):
         monitor_list.append({
             "id": m["id"], "name": m["name"], "url": m["url"],
             "type": "monitor", "status": status,
+            "group_name": m["group_name"],
             "latency_ms": last["latency_ms"] if last else None,
             "msg": last["msg"] if last else None,
             "checked_at": last["checked_at"] if last else None,
