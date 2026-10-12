@@ -645,7 +645,8 @@ function renderDashboard(monitors) {
     listEl.innerHTML = html;
     return;
   }
-  html += viewMonitors.map(renderDetailPanel).join('');
+  // Two-column grid so two monitor panels show side by side (collapses to one on narrow screens)
+  html += `<div class="app-panels-grid">${viewMonitors.map(renderDetailPanel).join('')}</div>`;
   listEl.innerHTML = html;
 
   // Fill recent-heartbeat tables for each panel
