@@ -3879,7 +3879,10 @@ def _check_service_alerts(server_id, process_services):
                         "INSERT INTO service_events (server_id, service_name, status) VALUES (?,?,?)",
                         (server_id, name, "down")
                     )
-                key = ("service", f"{server_id}_{name}")
+                # NOTE: DOWN and RECOVERED use separate cooldown keys (suffixed by
+                # status) so a DOWN alert's cooldown never suppresses the RECOVERED
+                # alert that follows shortly after, and vice versa.
+                key = ("service", f"{server_id}_{name}_down")
                 if now - _get_last_sent(key) > ALERT_COOLDOWN:
                     body = (
                         f"Server: {hostname} ({env})\n"
@@ -3898,7 +3901,7 @@ def _check_service_alerts(server_id, process_services):
                         "INSERT INTO service_events (server_id, service_name, status) VALUES (?,?,?)",
                         (server_id, name, "running")
                     )
-                key = ("service", f"{server_id}_{name}")
+                key = ("service", f"{server_id}_{name}_recovered")
                 if now - _get_last_sent(key) > ALERT_COOLDOWN:
                     body = (
                         f"Server: {hostname} ({env})\n"
