@@ -156,8 +156,17 @@ PROCESS_SERVICES="["
 FIRST=1
 while IFS='|' read -r PS_NAME PS_PATTERN PS_PORTS PS_CRITICAL; do
   [ -z "$PS_NAME" ] && continue
-  # Collect matching PIDs via ps (exclude the grep itself)
-  PS_PIDS=$(ps -eo pid,args --no-headers 2>/dev/null | grep -F -- "$PS_PATTERN" | grep -v 'grep' | awk '{print $1}')
+  # Collect matching PIDs via ps.
+  # IMPORTANT: exclude false positives from the collector's OWN invocation line.
+  # Ansible launches this script by passing CROIT_PROCESS_CONFIG as an env-var
+  # assignment on the remote command line it runs over SSH (something like
+  # "CROIT_PROCESS_CONFIG='AlertReview|tierName=AlertReview|...;;...' sh -c
+  # 'bash /tmp/croit_collect_metrics.sh'"). That single ps line therefore CONTAINS
+  # every pattern we search for (tierName=..., the FKRUN path, "appdynamics", ...).
+  # Without excluding it, every configured process always "matches" that one
+  # wrapper line and is reported as running, even when the real target process
+  # is dead — which is exactly the false positive seen on cro-r3fxacruat.
+  PS_PIDS=$(ps -eo pid,args --no-headers 2>/dev/null | grep -F -- "$PS_PATTERN" | grep -v 'grep' | grep -v 'CROIT_PROCESS_CONFIG' | grep -v 'croit_collect_metrics.sh' | grep -v 'collect_metrics_linux.sh' | awk '{print $1}')
   # Build the PIDs JSON array and status
   PIDS_JSON="["
   PID_FIRST=1

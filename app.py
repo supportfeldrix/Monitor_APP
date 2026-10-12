@@ -681,6 +681,41 @@ def init_db():
     except Exception:
         pass
 
+    # Migration: add latency_threshold_ms column to monitors (Feature: Latency Threshold Alerts)
+    try:
+        conn.execute("ALTER TABLE monitors ADD COLUMN latency_threshold_ms INTEGER")
+        print("[DB] Migrated: added latency_threshold_ms to monitors.")
+    except Exception:
+        pass
+
+    # Migration: add response body assertion columns to monitors (Feature: Response Body Assertions)
+    for col, defn in [
+        ("assert_json_path",  "TEXT"),
+        ("assert_json_value", "TEXT"),
+        ("assert_regex",      "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE monitors ADD COLUMN {col} {defn}")
+            print(f"[DB] Migrated: added {col} to monitors.")
+        except Exception:
+            pass
+
+    # Migration: create incidents table (Feature: Incident Management)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS incidents (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            monitor_id       INTEGER NOT NULL,
+            started_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+            resolved_at      TEXT,
+            duration_seconds INTEGER,
+            cause            TEXT,
+            notes            TEXT,
+            auto_created     INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (monitor_id) REFERENCES monitors(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_incidents_monitor ON incidents (monitor_id, started_at);
+    """)
+
     # Seed default admin user if no users exist
     count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if count == 0:
@@ -760,8 +795,39 @@ def _get_proxies(url: str) -> dict:
     return {}  # lets requests pick up HTTP_PROXY / HTTPS_PROXY env vars
 
 
+def _extract_json_path(data, path):
+    """Walk a simple dot-notation JSON path like '$.data.status' or 'items.0.id'.
+    Returns (found, value). Supports dict keys and list indices. No full JSONPath syntax."""
+    p = path.strip()
+    if p.startswith("$"):
+        p = p[1:]
+    p = p.lstrip(".")
+    if p == "":
+        return True, data
+    cur = data
+    for part in p.split("."):
+        if part == "":
+            continue
+        if isinstance(cur, dict):
+            if part not in cur:
+                return False, None
+            cur = cur[part]
+        elif isinstance(cur, list):
+            try:
+                idx = int(part)
+            except ValueError:
+                return False, None
+            if idx < 0 or idx >= len(cur):
+                return False, None
+            cur = cur[idx]
+        else:
+            return False, None
+    return True, cur
+
+
 def check_http(url, timeout, keyword=None, accepted_codes="200-299", verify_ssl=False,
-               method="GET", request_body=None, request_headers=None):
+               method="GET", request_body=None, request_headers=None,
+               assert_json_path=None, assert_json_value=None, assert_regex=None):
     try:
         start = time.monotonic()
         headers = {"Content-Type": "application/json"}
@@ -819,6 +885,27 @@ def check_http(url, timeout, keyword=None, accepted_codes="200-299", verify_ssl=
         if keyword:
             if keyword.lower() not in resp.text.lower():
                 return 0, latency, f"Keyword '{keyword}' not found"
+
+        # JSON path assertion
+        if assert_json_path:
+            try:
+                parsed = resp.json()
+            except Exception:
+                return 0, latency, "JSON assertion failed: response is not valid JSON"
+            found, actual = _extract_json_path(parsed, assert_json_path)
+            if not found:
+                return 0, latency, f"JSON assertion failed: path '{assert_json_path}' not found"
+            if assert_json_value is not None and str(assert_json_value) != "":
+                if str(actual) != str(assert_json_value):
+                    return 0, latency, f"JSON assertion failed: {assert_json_path} = '{actual}', expected '{assert_json_value}'"
+
+        # Regex assertion
+        if assert_regex:
+            try:
+                if not re.search(assert_regex, resp.text):
+                    return 0, latency, "Regex assertion failed: pattern not found"
+            except re.error as e:
+                return 0, latency, f"Regex assertion error: invalid pattern ({e})"
 
         return 1, latency, f"HTTP {code}"
     except requests.exceptions.Timeout:
@@ -939,17 +1026,24 @@ def do_check(monitor):
     url     = monitor["url"]
     timeout = monitor["timeout"] or 10
 
+    # Response body assertions (apply to all HTTP-based checks)
+    a_path  = monitor.get("assert_json_path")  if hasattr(monitor, "get") else monitor["assert_json_path"]
+    a_value = monitor.get("assert_json_value") if hasattr(monitor, "get") else monitor["assert_json_value"]
+    a_regex = monitor.get("assert_regex")      if hasattr(monitor, "get") else monitor["assert_regex"]
+
     if mtype in ("http", "https", "keyword"):
         kw = monitor["keyword"] if mtype == "keyword" else None
         return check_http(url, timeout, keyword=kw,
-                          accepted_codes=monitor["accepted_codes"] or "200-299")
+                          accepted_codes=monitor["accepted_codes"] or "200-299",
+                          assert_json_path=a_path, assert_json_value=a_value, assert_regex=a_regex)
     elif mtype == "http-post":
         return check_http(url, timeout,
                           keyword=monitor.get("keyword") or None,
                           accepted_codes=monitor["accepted_codes"] or "200-299",
                           method="POST",
                           request_body=monitor.get("request_body") or None,
-                          request_headers=monitor.get("request_headers") or None)
+                          request_headers=monitor.get("request_headers") or None,
+                          assert_json_path=a_path, assert_json_value=a_value, assert_regex=a_regex)
     elif mtype == "tcp":
         # url field holds host:port for TCP
         host = url
@@ -989,12 +1083,16 @@ def send_alert_email(monitor_name, url, status, msg):
             state = "🔴 DOWN"
         elif status == "ssl_warning":
             state = "🟡 Certificate Expiring Soon"
+        elif status == "latency_warning":
+            state = "🟡 Latency Warning"
         else:
             state = "🟢 UP"
         body  = f"Monitor: {monitor_name}\nURL: {url}\nStatus: {state}\nMessage: {msg}\nTime: {datetime.now()}"
         m = MIMEText(body)
         if status == "ssl_warning":
             m["Subject"] = f"[SSL Warning] {monitor_name} - Certificate Expiring Soon"
+        elif status == "latency_warning":
+            m["Subject"] = f"[Latency Warning] {monitor_name} - {msg}"
         else:
             m["Subject"] = f"[Uptime Monitor] {monitor_name} is {state}"
         m["From"]    = smtp_from
@@ -1012,6 +1110,7 @@ def send_alert_email(monitor_name, url, status, msg):
 
 prev_status   = {}   # monitor_id -> last status
 retry_counts  = {}   # monitor_id -> consecutive failures
+latency_alert_state = {}  # monitor_id -> True if a latency-breach alert is currently active
 
 def monitor_loop():
     last_checked = {}
@@ -1071,11 +1170,69 @@ def monitor_loop():
                     (mid, status, latency, msg)
                 )
 
+            prev = prev_status.get(mid)
+
             # Alert on state change
             if m["notify_email"]:
-                prev = prev_status.get(mid)
                 if prev is not None and prev != status:
                     send_alert_email(m["name"], m["url"], status, msg or "")
+
+            # Incident management: auto-create on DOWN transition, auto-resolve on UP transition
+            if prev is not None and prev != status:
+                try:
+                    if status == 0:
+                        # Went DOWN — open an incident if none is currently open
+                        with DB_LOCK, get_db() as conn:
+                            open_row = conn.execute(
+                                "SELECT id FROM incidents WHERE monitor_id=? AND resolved_at IS NULL LIMIT 1",
+                                (mid,)
+                            ).fetchone()
+                            if not open_row:
+                                conn.execute(
+                                    "INSERT INTO incidents (monitor_id, cause, auto_created) VALUES (?,?,1)",
+                                    (mid, msg or "Monitor went down")
+                                )
+                                print(f"[INCIDENT] Opened for {m['name']} — {msg}")
+                    else:
+                        # Recovered — resolve any open incident
+                        with DB_LOCK, get_db() as conn:
+                            open_row = conn.execute(
+                                "SELECT id, started_at FROM incidents WHERE monitor_id=? AND resolved_at IS NULL ORDER BY started_at DESC LIMIT 1",
+                                (mid,)
+                            ).fetchone()
+                            if open_row:
+                                try:
+                                    started = datetime.strptime(open_row["started_at"], "%Y-%m-%d %H:%M:%S")
+                                    dur = int((datetime.utcnow() - started).total_seconds())
+                                    if dur < 0:
+                                        dur = 0
+                                except Exception:
+                                    dur = None
+                                conn.execute(
+                                    "UPDATE incidents SET resolved_at=datetime('now'), duration_seconds=? WHERE id=?",
+                                    (dur, open_row["id"])
+                                )
+                                print(f"[INCIDENT] Resolved for {m['name']} (duration {dur}s)")
+                except Exception as e:
+                    print(f"[INCIDENT] Error updating incident for {m['name']}: {e}")
+
+            # Latency threshold alerting (only when UP)
+            threshold = m.get("latency_threshold_ms")
+            if status == 1 and threshold and latency is not None:
+                breaching = latency > int(threshold)
+                already = latency_alert_state.get(mid, False)
+                if breaching and not already:
+                    if m["notify_email"]:
+                        send_alert_email(
+                            m["name"], m["url"], "latency_warning",
+                            f"Response time {latency}ms exceeded threshold {int(threshold)}ms"
+                        )
+                    latency_alert_state[mid] = True
+                    print(f"[LATENCY] {m['name']} — {latency}ms > {int(threshold)}ms threshold")
+                elif not breaching and already:
+                    # Recovered below threshold — reset so it can alert again on the next breach
+                    latency_alert_state[mid] = False
+                    print(f"[LATENCY] {m['name']} — recovered to {latency}ms (below {int(threshold)}ms)")
 
             prev_status[mid] = status
             last_checked[mid] = now
@@ -1807,14 +1964,23 @@ def api_add_monitor():
     group    = d.get("group_name","").strip()
     req_body    = d.get("request_body","") or None
     req_headers = d.get("request_headers","") or None
+    latency_thr = d.get("latency_threshold_ms") or None
+    if latency_thr is not None:
+        try: latency_thr = int(latency_thr)
+        except (ValueError, TypeError): latency_thr = None
+    a_json_path  = d.get("assert_json_path","") or None
+    a_json_value = d.get("assert_json_value","") or None
+    a_regex      = d.get("assert_regex","") or None
     if not name or not url:
         return jsonify({"error": "name and url required"}), 400
     with DB_LOCK, get_db() as conn:
         cur = conn.execute(
             """INSERT INTO monitors
-               (name,url,type,interval,retries,timeout,keyword,accepted_codes,notify_email,description,tags,group_name,request_body,request_headers)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (name,url,mtype,interval,retries,timeout,keyword,accepted,notify,desc,tags,group,req_body,req_headers)
+               (name,url,type,interval,retries,timeout,keyword,accepted_codes,notify_email,description,tags,group_name,request_body,request_headers,
+                latency_threshold_ms,assert_json_path,assert_json_value,assert_regex)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (name,url,mtype,interval,retries,timeout,keyword,accepted,notify,desc,tags,group,req_body,req_headers,
+             latency_thr,a_json_path,a_json_value,a_regex)
         )
         row = conn.execute("SELECT * FROM monitors WHERE id=?", (cur.lastrowid,)).fetchone()
     return jsonify(dict(row)), 201
@@ -1828,7 +1994,8 @@ def api_update_monitor(mid):
     vals   = []
     for col in ["name","url","type","interval","retries","timeout",
                 "keyword","accepted_codes","notify_email","description","tags","enabled","group_name",
-                "request_body","request_headers"]:
+                "request_body","request_headers",
+                "latency_threshold_ms","assert_json_path","assert_json_value","assert_regex"]:
         if col in d:
             fields.append(f"{col}=?")
             vals.append(d[col])
@@ -2066,6 +2233,121 @@ def api_monitor_audit_report(mid):
 
 
 # ─────────────────────────────────────────────
+# API — Check Now (on-demand test)
+# ─────────────────────────────────────────────
+
+@app.route("/api/monitors/<int:mid>/check-now", methods=["POST"])
+@role_required(['admin', 'viewer'])
+def api_check_now(mid):
+    """Run an immediate check for a monitor, record the heartbeat, and return the result.
+    Does NOT trigger alert emails — this is a manual test."""
+    with DB_LOCK, get_db() as conn:
+        row = conn.execute("SELECT * FROM monitors WHERE id=?", (mid,)).fetchone()
+    if not row:
+        return jsonify({"error": "monitor not found"}), 404
+    monitor = dict(row)
+    status, latency, msg = do_check(monitor)
+    with DB_LOCK, get_db() as conn:
+        conn.execute(
+            "INSERT INTO heartbeats (monitor_id, status, latency_ms, msg) VALUES (?,?,?,?)",
+            (mid, status, latency, msg)
+        )
+        hb = conn.execute(
+            "SELECT checked_at FROM heartbeats WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1",
+            (mid,)
+        ).fetchone()
+    return jsonify({
+        "status": status,
+        "latency_ms": latency,
+        "msg": msg,
+        "checked_at": hb["checked_at"] if hb else None,
+    })
+
+
+# ─────────────────────────────────────────────
+# API — Incidents
+# ─────────────────────────────────────────────
+
+def _incident_dict(row):
+    d = dict(row)
+    d["open"] = d.get("resolved_at") is None
+    return d
+
+
+@app.route("/api/incidents", methods=["GET"])
+@role_required(['admin', 'viewer'])
+def api_list_incidents():
+    monitor_id = request.args.get("monitor_id", type=int)
+    status     = request.args.get("status")   # 'open' | 'resolved'
+    limit      = request.args.get("limit", default=100, type=int)
+    clauses = []
+    params  = []
+    if monitor_id is not None:
+        clauses.append("i.monitor_id=?"); params.append(monitor_id)
+    if status == "open":
+        clauses.append("i.resolved_at IS NULL")
+    elif status == "resolved":
+        clauses.append("i.resolved_at IS NOT NULL")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+    with DB_LOCK, get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT i.*, m.name AS monitor_name, m.url AS monitor_url
+                FROM incidents i JOIN monitors m ON m.id=i.monitor_id
+                {where} ORDER BY i.started_at DESC LIMIT ?""",
+            params
+        ).fetchall()
+    return jsonify([_incident_dict(r) for r in rows])
+
+
+@app.route("/api/incidents/<int:iid>", methods=["GET"])
+@role_required(['admin', 'viewer'])
+def api_get_incident(iid):
+    with DB_LOCK, get_db() as conn:
+        row = conn.execute(
+            """SELECT i.*, m.name AS monitor_name, m.url AS monitor_url
+               FROM incidents i JOIN monitors m ON m.id=i.monitor_id
+               WHERE i.id=?""", (iid,)
+        ).fetchone()
+    if not row:
+        return jsonify({"error": "incident not found"}), 404
+    return jsonify(_incident_dict(row))
+
+
+@app.route("/api/incidents/<int:iid>", methods=["PUT"])
+@role_required(['admin'])
+def api_update_incident(iid):
+    d = request.get_json() or {}
+    fields = []
+    vals   = []
+    for col in ["notes", "cause"]:
+        if col in d:
+            fields.append(f"{col}=?")
+            vals.append(d[col])
+    if not fields:
+        return jsonify({"error": "nothing to update"}), 400
+    vals.append(iid)
+    with DB_LOCK, get_db() as conn:
+        conn.execute(f"UPDATE incidents SET {','.join(fields)} WHERE id=?", vals)
+        row = conn.execute("SELECT * FROM incidents WHERE id=?", (iid,)).fetchone()
+    if not row:
+        return jsonify({"error": "incident not found"}), 404
+    return jsonify(_incident_dict(row))
+
+
+@app.route("/api/monitors/<int:mid>/incidents", methods=["GET"])
+@role_required(['admin', 'viewer'])
+def api_monitor_incidents(mid):
+    limit = request.args.get("limit", default=10, type=int)
+    with DB_LOCK, get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM incidents WHERE monitor_id=? ORDER BY started_at DESC LIMIT ?",
+            (mid, limit)
+        ).fetchall()
+    return jsonify([_incident_dict(r) for r in rows])
+
+
+# ─────────────────────────────────────────────
 # API — Dashboard status (all monitors)
 # ─────────────────────────────────────────────
 
@@ -2075,10 +2357,15 @@ def api_status():
     dt_from, dt_to = parse_timeframe(request.args)
     with DB_LOCK, get_db() as conn:
         monitors = conn.execute("SELECT * FROM monitors ORDER BY id").fetchall()
+        open_incident_ids = set(
+            r["monitor_id"] for r in conn.execute(
+                "SELECT DISTINCT monitor_id FROM incidents WHERE resolved_at IS NULL"
+            ).fetchall()
+        )
         result = []
         for m in monitors:
             stats = build_monitor_stats(m["id"], dt_from, dt_to, conn)
-            result.append({**dict(m), **stats})
+            result.append({**dict(m), **stats, "open_incident": m["id"] in open_incident_ids})
     return jsonify(result)
 
 
@@ -2205,10 +2492,26 @@ def api_page_by_slug(slug):
             (page["id"],)
         ).fetchall()
         result = []
+        monitor_ids = []
         for m in monitors:
             stats = build_monitor_stats(m["id"], dt_from, dt_to, conn)
             result.append({**dict(m), **stats})
-    return jsonify({"page": dict(page), "monitors": result})
+            monitor_ids.append(m["id"])
+
+        # Recent incidents (last 7 days) for the monitors on this page
+        incidents = []
+        if monitor_ids:
+            placeholders = ",".join("?" for _ in monitor_ids)
+            inc_rows = conn.execute(
+                f"""SELECT i.*, m.name AS monitor_name
+                    FROM incidents i JOIN monitors m ON m.id=i.monitor_id
+                    WHERE i.monitor_id IN ({placeholders})
+                      AND i.started_at >= datetime('now', '-7 days')
+                    ORDER BY i.started_at DESC LIMIT 50""",
+                monitor_ids
+            ).fetchall()
+            incidents = [_incident_dict(r) for r in inc_rows]
+    return jsonify({"page": dict(page), "monitors": result, "incidents": incidents})
 
 
 # ─────────────────────────────────────────────
@@ -4357,10 +4660,17 @@ def api_agent_metrics(sid):
     })
 
 
+AGENT_STALE_SECONDS = 180  # agent is considered offline if no heartbeat within this window
+
+
 @app.route("/api/servers/<int:sid>/services", methods=["GET"])
 @role_required(['admin', 'viewer'])
 def api_server_services(sid):
-    """Get discovered services for a server."""
+    """Get discovered services for a server.
+    NOTE: this data is a snapshot from the agent's last heartbeat. If the agent/server
+    has gone down since then, this list is stale — it is NOT a live check. The response
+    includes agent_stale / agent_last_seen so the UI can warn instead of implying the
+    services are confidently running."""
     category = request.args.get("category")  # port, service, container, or None for all
     with DB_LOCK, get_db() as conn:
         if category:
@@ -4373,7 +4683,20 @@ def api_server_services(sid):
                 "SELECT * FROM server_services WHERE server_id=? ORDER BY category, name",
                 (sid,)
             ).fetchall()
+        latest_metric = conn.execute(
+            "SELECT collected_at FROM agent_metrics WHERE server_id=? ORDER BY collected_at DESC LIMIT 1",
+            (sid,)
+        ).fetchone()
     services = [dict(r) for r in rows]
+
+    agent_last_seen = latest_metric["collected_at"] if latest_metric else None
+    agent_stale = True
+    if agent_last_seen:
+        try:
+            last_dt = datetime.strptime(agent_last_seen, "%Y-%m-%d %H:%M:%S")
+            agent_stale = (datetime.utcnow() - last_dt).total_seconds() > AGENT_STALE_SECONDS
+        except Exception:
+            agent_stale = True
     # Load the stable watched set and compute 'watched' for process-category rows.
     # (The 'watched' column on server_services is volatile — recomputed here from
     #  the watched_services table, which survives the heartbeat DELETE/reinsert.)
@@ -4395,7 +4718,10 @@ def api_server_services(sid):
         "containers": len([s for s in services if s["category"] == "container"]),
         "processes":  len([s for s in services if s["category"] == "process"]),
     }
-    return jsonify({"services": services, "summary": summary})
+    return jsonify({
+        "services": services, "summary": summary,
+        "agent_stale": agent_stale, "agent_last_seen": agent_last_seen,
+    })
 
 
 @app.route("/api/servers/<int:sid>/services/watch", methods=["POST"])

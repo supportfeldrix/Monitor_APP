@@ -729,7 +729,7 @@ async function renderServerServicesSection(serverId) {
     const res = await fetch(`${API}/api/servers/${serverId}/services`, {credentials:'include'});
     if (!res.ok) return '';
     const data = await res.json();
-    const { services, summary } = data;
+    const { services, summary, agent_stale, agent_last_seen } = data;
 
     if (!services.length) {
       return `
@@ -745,7 +745,21 @@ async function renderServerServicesSection(serverId) {
 
     const isAdmin = !!(currentUserInfo && currentUserInfo.role === 'admin');
 
-    let html = `
+    // The service list is a snapshot from the agent's last heartbeat, not a live check.
+    // If the agent hasn't reported recently, warn loudly instead of implying these
+    // "RUNNING" statuses are current — the server/agent may be down right now.
+    let html = '';
+    if (agent_stale) {
+      const seenStr = agent_last_seen ? new Date(agent_last_seen + 'Z').toLocaleString() : 'never';
+      html += `<div style="padding:10px 14px;background:var(--red-dim);border:1px solid var(--red);border-radius:var(--radius);margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--red)">⚠ Stale data — agent not reporting</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px">
+          Last agent check-in: <strong>${esc(seenStr)}</strong>. The statuses below are from that last check-in and may no longer reflect reality — the server or agent could be down right now.
+        </div>
+      </div>`;
+    }
+
+    html += `
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">`;
     if (summary.processes) {
       html += `<span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(230,69,69,.1);color:var(--red);border:1px solid var(--red)">🚨 ${summary.processes} Critical</span>`;

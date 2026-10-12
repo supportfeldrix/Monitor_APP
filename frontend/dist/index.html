@@ -202,6 +202,14 @@ select.form-control option{background:var(--surface)}
 .srv-card .srv-host{font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .srv-card .srv-meta{font-size:11px;color:var(--text3);margin-top:2px}
 .srv-card .srv-counts{font-size:11px;color:var(--text3);white-space:nowrap}
+/* Incidents list (per-monitor detail panel) */
+.incident-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;background:var(--surface2)}
+.incident-row-main{flex:1;min-width:0}
+.incident-row-time{font-size:12px;font-weight:600;color:var(--text)}
+.incident-row-cause{font-size:11px;color:var(--text3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.incident-row-duration{font-size:11px;color:var(--text2);white-space:nowrap;flex-shrink:0}
+.incident-pulse-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:4px;animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* TABLES */
 .table-wrap{overflow-x:auto}
@@ -443,6 +451,9 @@ canvas{max-width:100%}
 
     <!-- Monitor status cards (all services summary) -->
     <div id="sp-monitors"></div>
+
+    <!-- Recent incidents (last 7 days) across the services on this page -->
+    <div id="sp-incidents" style="display:none;margin-top:16px"></div>
 
     <!-- Detail section: dropdown to pick one service for charts -->
     <div class="sp-detail-panel" id="sp-detail-panel" style="display:none">
@@ -1638,6 +1649,29 @@ canvas{max-width:100%}
           <div class="form-hint">Groups monitors together on the dashboard</div>
         </div>
         <div class="form-group"><label>Tags (comma-separated)</label><input class="form-control" id="m-tags" placeholder="production, jenkins, api"/></div>
+      </div>
+      <div class="form-group">
+        <label>Latency Threshold (ms, optional)</label>
+        <input class="form-control" id="m-latency-threshold" type="number" min="1" placeholder="e.g. 500"/>
+        <div class="form-hint">Alert when response time exceeds this value, even while the monitor is UP. Leave blank to disable.</div>
+      </div>
+      <div class="form-group" style="padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius)">
+        <label style="margin-bottom:8px">Response Body Assertions (optional)</label>
+        <div class="form-row">
+          <div class="form-group">
+            <label>JSON Path</label>
+            <input class="form-control" id="m-assert-json-path" placeholder="$.status"/>
+          </div>
+          <div class="form-group">
+            <label>Expected Value</label>
+            <input class="form-control" id="m-assert-json-value" placeholder="ok"/>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Regex Pattern</label>
+          <input class="form-control" id="m-assert-regex" placeholder='"success":\s*true'/>
+          <div class="form-hint">Monitor fails if the JSON path doesn't match the expected value, or the regex isn't found in the response body.</div>
+        </div>
       </div>
       <div class="form-group">
         <label class="form-check">

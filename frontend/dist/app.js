@@ -514,17 +514,29 @@ function renderDetailPanel(m) {
   const iconId = typeIconId[m.type] || 'ic-http';
   const icon = `<svg width="20" height="20" style="color:var(--fnb-teal)"><use href="#${iconId}"/></svg>`;
   const tags = (m.tags||'').split(',').filter(Boolean).map(t=>`<span class="tag">${esc(t.trim())}</span>`).join('');
+  const incidentBadge = m.open_incident ? '<span class="badge badge-down" style="font-size:11px;margin-left:6px">⚠ Active Incident</span>' : '';
+
+  const metaParts = [
+    `Type: <strong style="color:var(--text)">${m.type.toUpperCase()}</strong>`,
+    `Interval: <strong style="color:var(--text)">${m.interval}s</strong>`,
+    `Retries: <strong style="color:var(--text)">${m.retries}</strong>`,
+    `Last check: <strong style="color:var(--text)">${lastCheck}</strong>`,
+  ];
+  if (m.latency_threshold_ms) metaParts.push(`Latency Alert: <strong style="color:var(--yellow)">&gt;${m.latency_threshold_ms}ms</strong>`);
+  if (m.assert_json_path) metaParts.push(`JSON Assert: <strong style="color:var(--text)">${esc(m.assert_json_path)}${m.assert_json_value?' = '+esc(m.assert_json_value):''}</strong>`);
+  if (m.assert_regex) metaParts.push(`Regex Assert: <strong style="color:var(--text)">${esc(m.assert_regex)}</strong>`);
 
   return `
     <div class="detail-panel" style="margin-bottom:16px">
       <div class="detail-header">
         <div class="detail-icon">${icon}</div>
         <div class="detail-title" style="flex:1">
-          <h2>${esc(m.name)} <span class="badge ${badgeCls}" style="font-size:11px">${badgeTxt}</span></h2>
+          <h2>${esc(m.name)} <span class="badge ${badgeCls}" style="font-size:11px">${badgeTxt}</span>${incidentBadge}</h2>
           <div class="url"><a href="${esc(m.url)}" target="_blank" style="color:var(--blue)">${esc(m.url)}</a></div>
           ${tags ? `<div style="margin-top:6px">${tags}</div>` : ''}
         </div>
         <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" id="check-now-btn-${m.id}" onclick="checkNow(${m.id})" title="Run an immediate check"><svg width="13" height="13"><use href="#ic-refresh"/></svg> Check Now</button>
           <button class="btn btn-secondary btn-sm" onclick="openEditMonitorModal(${m.id})"><svg width="13" height="13"><use href="#ic-edit"/></svg> Edit</button>
           <button class="btn btn-secondary btn-sm" onclick="toggleMonitor(${m.id})">${m.enabled?'<svg width="13" height="13"><use href="#ic-pause"/></svg> Pause':'<svg width="13" height="13"><use href="#ic-play"/></svg> Resume'}</button>
           <button class="btn btn-danger btn-sm" onclick="confirmDelete('monitor',${m.id},'${esc(m.name)}')"><svg width="13" height="13"><use href="#ic-trash"/></svg></button>
@@ -541,15 +553,16 @@ function renderDetailPanel(m) {
         ${renderHBBars(m.timeline, m.from_dt, m.to_dt)}
       </div>
       <div style="font-size:12px;color:var(--text3);margin-bottom:16px">
-        <span>Type: <strong style="color:var(--text)">${m.type.toUpperCase()}</strong></span> &nbsp;·&nbsp;
-        <span>Interval: <strong style="color:var(--text)">${m.interval}s</strong></span> &nbsp;·&nbsp;
-        <span>Retries: <strong style="color:var(--text)">${m.retries}</strong></span> &nbsp;·&nbsp;
-        <span>Last check: <strong style="color:var(--text)">${lastCheck}</strong></span>
+        ${metaParts.join(' &nbsp;·&nbsp; ')}
       </div>
       ${m.description ? `<div style="color:var(--text2);font-size:13px;margin-bottom:16px">${esc(m.description)}</div>` : ''}
-      <div>
+      <div style="margin-bottom:16px">
         <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;font-weight:600">Recent Heartbeats</div>
         <div id="hb-table-wrap-${m.id}"><div class="loading-center"><div class="spinner"></div></div></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;font-weight:600">🚨 Recent Incidents</div>
+        <div id="incidents-wrap-${m.id}"><div class="loading-center"><div class="spinner"></div></div></div>
       </div>
       <div style="margin-top:20px;padding:16px;background:var(--surface2);border-radius:var(--radius);border:1px solid var(--border)">
         <div style="font-size:11px;color:var(--text3);margin-bottom:10px;text-transform:uppercase;font-weight:600">📋 Audit Report</div>
@@ -566,6 +579,70 @@ function renderDetailPanel(m) {
         <div id="audit-status-${m.id}" style="font-size:11px;color:var(--text3);margin-top:8px"></div>
       </div>
     </div>`;
+}
+
+// Run an on-demand check for a monitor from its detail panel
+async function checkNow(id) {
+  const btn = document.getElementById('check-now-btn-' + id);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner" style="width:12px;height:12px;display:inline-block"></div> Checking...'; }
+  try {
+    const res = await fetch(`${API}/api/monitors/${id}/check-now`, { method:'POST', credentials:'include' });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Check failed', 'error'); return; }
+    const label = data.status ? `UP — ${data.latency_ms ?? '–'}ms` : `DOWN — ${data.msg || 'Check failed'}`;
+    toast(`Check complete: ${label}`, data.status ? 'success' : 'error');
+    refreshDashboard();
+  } catch(e) {
+    toast('Network error: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="13" height="13"><use href="#ic-refresh"/></svg> Check Now'; }
+  }
+}
+
+// Build the recent-incidents list HTML for a monitor's detail panel
+function incidentsListHTML(incidents) {
+  if (!incidents || !incidents.length) {
+    return '<div style="color:var(--text3);font-size:13px;padding:8px 0">No incidents recorded.</div>';
+  }
+  return incidents.map(inc => {
+    const started = new Date(inc.started_at + 'Z').toLocaleString();
+    const ongoing = inc.open;
+    const durationStr = ongoing
+      ? '<span style="color:var(--red);font-weight:600"><span class="incident-pulse-dot"></span> Ongoing</span>'
+      : (inc.duration_seconds != null ? formatDuration(inc.duration_seconds) : '–');
+    return `<div class="incident-row">
+      <div class="incident-row-main">
+        <div class="incident-row-time">${started}</div>
+        <div class="incident-row-cause">${esc(inc.cause || 'No details recorded')}</div>
+      </div>
+      <div class="incident-row-duration">${durationStr}</div>
+    </div>`;
+  }).join('');
+}
+
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds/60)}m`;
+  const h = Math.floor(seconds/3600);
+  const mm = Math.round((seconds%3600)/60);
+  return `${h}h ${mm}m`;
+}
+
+// Fetch and fill the incidents list for every monitor currently shown in the app view
+async function loadAppIncidents(monitors) {
+  await Promise.all(monitors.map(async m => {
+    const wrap = document.getElementById('incidents-wrap-' + m.id);
+    if (!wrap) return;
+    try {
+      const res = await fetch(`${API}/api/monitors/${m.id}/incidents?limit=5`, {credentials:'include'});
+      const incidents = await res.json();
+      const target = document.getElementById('incidents-wrap-' + m.id);
+      if (target) target.innerHTML = incidentsListHTML(incidents);
+    } catch(e) {
+      const target = document.getElementById('incidents-wrap-' + m.id);
+      if (target) target.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">Could not load incidents.</div>';
+    }
+  }));
 }
 
 // Build the recent-heartbeats table HTML (shared markup)
@@ -649,8 +726,9 @@ function renderDashboard(monitors) {
   html += `<div class="app-panels-grid">${viewMonitors.map(renderDetailPanel).join('')}</div>`;
   listEl.innerHTML = html;
 
-  // Fill recent-heartbeat tables for each panel
+  // Fill recent-heartbeat tables and incident lists for each panel
   loadAppHeartbeats(viewMonitors);
+  loadAppIncidents(viewMonitors);
 }
 
 function renderHBBars(timeline, fromDt, toDt) {
@@ -791,6 +869,14 @@ function openAddMonitorModal() {
   document.getElementById('m-tags').value     = '';
   document.getElementById('m-group').value    = '';
   document.getElementById('m-notify').checked = false;
+  document.getElementById('m-latency-threshold').value = '';
+  document.getElementById('m-assert-json-path').value  = '';
+  document.getElementById('m-assert-json-value').value = '';
+  document.getElementById('m-assert-regex').value      = '';
+  const reqBody0 = document.getElementById('m-request-body');
+  if (reqBody0) reqBody0.value = '';
+  const reqHeaders0 = document.getElementById('m-request-headers');
+  if (reqHeaders0) reqHeaders0.value = '';
   onMonitorTypeChange();
   openModal('modal-monitor');
 }
@@ -816,6 +902,10 @@ function openEditMonitorModal(id) {
   if (reqBody) reqBody.value = m.request_body || '';
   const reqHeaders = document.getElementById('m-request-headers');
   if (reqHeaders) reqHeaders.value = m.request_headers || '';
+  document.getElementById('m-latency-threshold').value = m.latency_threshold_ms || '';
+  document.getElementById('m-assert-json-path').value  = m.assert_json_path || '';
+  document.getElementById('m-assert-json-value').value = m.assert_json_value || '';
+  document.getElementById('m-assert-regex').value      = m.assert_regex || '';
   onMonitorTypeChange();
   openModal('modal-monitor');
 }
@@ -863,6 +953,10 @@ async function saveMonitor() {
     notify_email:    document.getElementById('m-notify').checked ? 1 : 0,
     request_body:    document.getElementById('m-request-body')?.value.trim() || null,
     request_headers: document.getElementById('m-request-headers')?.value.trim() || null,
+    latency_threshold_ms: document.getElementById('m-latency-threshold').value.trim() || null,
+    assert_json_path:     document.getElementById('m-assert-json-path').value.trim() || null,
+    assert_json_value:    document.getElementById('m-assert-json-value').value.trim() || null,
+    assert_regex:         document.getElementById('m-assert-regex').value.trim() || null,
   };
   if (!body.name || !body.url) { toast('Name and URL are required','error'); return; }
   // Validate JSON body if http-post
@@ -1229,6 +1323,7 @@ async function loadStatusPageView(slug) {
     spLastMonitors = mons;
 
     renderSpMonitors(mons);
+    renderSpIncidents(data.incidents || []);
   } catch(e) {
     document.getElementById('sp-monitors').innerHTML =
       `<div class="empty-state"><p style="color:var(--red)">${esc(e.message)}</p></div>`;
@@ -1340,6 +1435,31 @@ function renderSpMonitors(mons) {
   if (sel.value) { spDetailChanged(); }
 
   updateSpFilterBadge();
+}
+
+function renderSpIncidents(incidents) {
+  const el = document.getElementById('sp-incidents');
+  if (!el) return;
+  if (!incidents.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  el.innerHTML = `<div class="sp-group">
+    <div class="sp-group-header">
+      <span class="sp-group-name">Recent Incidents (last 7 days)</span>
+    </div>
+    <div style="padding:12px">${incidents.map(inc => {
+      const started = new Date(inc.started_at + 'Z').toLocaleString();
+      const durationStr = inc.open
+        ? '<span style="color:var(--red);font-weight:600"><span class="incident-pulse-dot"></span> Ongoing</span>'
+        : (inc.duration_seconds != null ? formatDuration(inc.duration_seconds) : '–');
+      return `<div class="incident-row">
+        <div class="incident-row-main">
+          <div class="incident-row-time">${esc(inc.monitor_name)} — ${started}</div>
+          <div class="incident-row-cause">${esc(inc.cause || 'No details recorded')}</div>
+        </div>
+        <div class="incident-row-duration">${durationStr}</div>
+      </div>`;
+    }).join('')}</div>
+  </div>`;
 }
 
 async function spDetailChanged() {

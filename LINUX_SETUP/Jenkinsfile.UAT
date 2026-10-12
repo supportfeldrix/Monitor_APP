@@ -1,0 +1,67 @@
+pipeline {
+    agent any
+    triggers {
+        cron('*/10 * * * *')
+    }
+    environment {
+        ANSIBLE_SERVER = 'host.containers.internal'
+        ANSIBLE_USER = 'ansible'
+        PLAYBOOK_DIR = '/home/ansible/CRO-IT/playbooks/cro_monitor'
+        INVENTORY_FILE = '/home/ansible/CRO-IT/inventories/fircosoft.ini'
+        PLAYBOOK_FILE = 'ansible_linux_agent.yml'
+        ANSIBLE_NO_PROXY = 'localhost,127.0.0.1,.fnb.co.za,10.0.0.0/8,172.20.0.0/16'
+        SSH_OPTS = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-%r@%h:%p -o ControlPersist=10m -i /var/jenkins_home/.ssh/ansible_key'
+    }
+    options {
+        // Prevent overlapping runs if a collection ever takes longer than 2 minutes
+        // (e.g. SSH hiccup, slow host) — avoids two builds racing on the same
+        // ControlPath socket / remote script copy.
+        disableConcurrentBuilds()
+        // Every-2-minute runs build up history fast — cap it so Jenkins doesn't
+        // accumulate unbounded logs/artifacts for this job.
+        buildDiscarder(logRotator(numToKeepStr: '200'))
+        timestamps()
+    }
+    stages {
+        stage('Collect Linux Metrics') {
+            steps {
+                sshagent(['ansible-service-account-key']) {
+                    sh '''
+ssh ${SSH_OPTS} ${ANSIBLE_USER}@${ANSIBLE_SERVER} bash << 'REMOTE_SCRIPT'
+export http_proxy=''
+export https_proxy=''
+export NO_PROXY='localhost,127.0.0.1,.fnb.co.za,10.0.0.0/8,172.20.0.0/16'
+export no_proxy='localhost,127.0.0.1,.fnb.co.za,10.0.0.0/8,172.20.0.0/16'
+cd /home/ansible/CRO-IT/playbooks/cro_monitor
+echo "🖥️ CROIT Linux Agent (UAT) — Build ${BUILD_NUMBER}"
+echo "=========================================="
+START_TIME=$(date +%s)
+ansible-playbook -i /home/ansible/CRO-IT/inventories/fircosoft.ini ansible_linux_agent.yml
+PLAYBOOK_EXIT=$?
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+echo ""
+echo "=========================================="
+if [ $PLAYBOOK_EXIT -eq 0 ]; then
+  echo "✅ Metrics collected successfully"
+else
+  echo "❌ Failed with exit code: $PLAYBOOK_EXIT"
+fi
+echo "Duration: ${DURATION} seconds"
+echo "=========================================="
+exit $PLAYBOOK_EXIT
+REMOTE_SCRIPT
+'''
+                }
+            }
+        }
+    }
+    post {
+        success {
+            echo '✅ Linux metrics collected successfully'
+        }
+        failure {
+            echo '❌ Linux metrics collection failed'
+        }
+    }
+}
