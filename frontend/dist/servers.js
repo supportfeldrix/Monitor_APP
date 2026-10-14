@@ -610,12 +610,12 @@ async function showAgentSetup(serverId, hostname) {
         <div style="padding:6px 10px;background:var(--surface2);font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase">Option B — systemd user service (no sudo)</div>
         <div style="padding:8px 10px;font-family:monospace;font-size:10px;word-break:break-all;background:var(--surface)">
           mkdir -p ~/.config/systemd/user<br>
-          cat > ~/.config/systemd/user/croit-agent.service &lt;&lt;'EOF'<br>
-          [Unit]<br>Description=CROIT Agent<br>After=network.target<br>
+          cat > ~/.config/systemd/user/rst-agent.service &lt;&lt;'EOF'<br>
+          [Unit]<br>Description=RST Agent<br>After=network.target<br>
           [Service]<br>ExecStart=python3 /home/f5151422/agent.py --url ${appUrl} --token ${token}<br>Restart=always<br>RestartSec=60<br>
           [Install]<br>WantedBy=default.target<br>EOF<br>
           systemctl --user daemon-reload<br>
-          systemctl --user enable --now croit-agent
+          systemctl --user enable --now rst-agent
         </div>
       </div>
       <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">

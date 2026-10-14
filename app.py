@@ -58,12 +58,40 @@ login_manager.login_view = None  # We handle redirects manually
 DB_PATH       = "uptime.db"
 MONITORS_FILE = "monitors.json"
 
+
+# ─────────────────────────────────────────────
+# Global error handler for /api/* routes
+# ─────────────────────────────────────────────
+# Without this, an unhandled exception in any API route falls through to
+# Flask's default HTML error page. The frontend then tries to JSON-parse that
+# HTML and fails with a confusing "Unexpected token '<' is not valid JSON"
+# error — hiding the real Python exception from both the browser console and
+# the person debugging it. This logs the full traceback server-side (so it's
+# visible in the console/log file) and returns a proper JSON error body for
+# any /api/* request, while leaving non-API routes (static files, login page)
+# on Flask's normal error handling.
+@app.errorhandler(Exception)
+def handle_api_exception(e):
+    import traceback
+    if request.path.startswith("/api/"):
+        traceback.print_exc()
+        code = getattr(e, "code", 500) or 500
+        return jsonify({"error": str(e), "type": type(e).__name__}), code
+    raise e
+
 # ─────────────────────────────────────────────
 # Database
 # ─────────────────────────────────────────────
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    # timeout=15: without an explicit timeout, sqlite3 only waits ~5s (the
+    # library default) before raising "database is locked" when another
+    # connection briefly holds the write lock (e.g. during the sequential
+    # migration blocks in init_db(), each of which opens — but never
+    # explicitly closes — its own connection via `with get_db() as conn:`,
+    # which can leave a prior connection's lock lingering just long enough to
+    # collide with the next one on a slower disk/filesystem).
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -548,7 +576,10 @@ def init_db():
             )
         print(f"[DB] Seeded {len(default_catalogue)} default software catalogue entries.")
     # Migration: create software_version_tracker tables if upgrading from old schema
-    with DB_LOCK, get_db() as conn:
+    # (reuses the single connection opened at the top of init_db() — see note there
+    # on why these migration blocks were merged instead of each opening a fresh
+    # connection to the same file in quick succession)
+    with DB_LOCK:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS software_version_tracker (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -607,7 +638,8 @@ def init_db():
                 )
             print(f"[DB] Seeded {len(default_trackers)} default software version trackers.")
     # Migration: create server_services table for auto-discovery
-    with DB_LOCK, get_db() as conn:
+    # (reuses the same connection — see note above)
+    with DB_LOCK:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS server_services (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -700,6 +732,67 @@ def init_db():
         except Exception:
             pass
 
+    # Migration: typed topology nodes (Feature: Service Topology — servers/DBs as nodes)
+    # dependencies/topology_layout originally only referenced monitors.id. These
+    # columns let an edge/position reference a monitor, db_monitor, or server.
+    # Existing rows implicitly stay type='monitor' (the only type that existed before).
+    # Check existing columns via PRAGMA first rather than relying on the ALTER
+    # TABLE call to fail with "duplicate column" — a transient error (e.g. a
+    # momentary "database is locked" from an earlier unclosed connection in this
+    # same startup sequence) would otherwise be swallowed by a bare except, silently
+    # skipping the migration and leaving the column missing. Checking first means
+    # we only skip when the column genuinely already exists.
+    try:
+        _dep_cols = {r["name"] for r in conn.execute("PRAGMA table_info(dependencies)").fetchall()}
+    except Exception:
+        _dep_cols = set()
+    for col, defn in [
+        ("monitor_type",     "TEXT NOT NULL DEFAULT 'monitor'"),
+        ("depends_on_type",  "TEXT NOT NULL DEFAULT 'monitor'"),
+    ]:
+        if col in _dep_cols:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE dependencies ADD COLUMN {col} {defn}")
+            print(f"[DB] Migrated: added {col} to dependencies.")
+        except Exception as e:
+            print(f"[DB] WARNING: could not add {col} to dependencies: {e}")
+
+    try:
+        _topo_layout_cols = {r["name"] for r in conn.execute("PRAGMA table_info(topology_layout)").fetchall()}
+    except Exception:
+        _topo_layout_cols = set()
+    if "node_type" not in _topo_layout_cols:
+        try:
+            conn.execute("ALTER TABLE topology_layout ADD COLUMN node_type TEXT NOT NULL DEFAULT 'monitor'")
+            print("[DB] Migrated: added node_type to topology_layout.")
+        except Exception as e:
+            print(f"[DB] WARNING: could not add node_type to topology_layout: {e}")
+
+    # topology_layout's PK was monitor_id only; a db_monitor and a server can have
+    # the same numeric id as an unrelated monitor, so positions must be keyed by
+    # (node_type, monitor_id). Rebuild the table with a composite key if needed.
+    try:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(topology_layout)").fetchall()]
+        pk_cols = [r["name"] for r in conn.execute("PRAGMA table_info(topology_layout)").fetchall() if r["pk"] > 0]
+        if "node_type" in cols and pk_cols == ["monitor_id"]:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS topology_layout_new (
+                    node_type   TEXT    NOT NULL DEFAULT 'monitor',
+                    monitor_id  INTEGER NOT NULL,
+                    pos_x       REAL    NOT NULL DEFAULT 0,
+                    pos_y       REAL    NOT NULL DEFAULT 0,
+                    PRIMARY KEY (node_type, monitor_id)
+                );
+                INSERT INTO topology_layout_new (node_type, monitor_id, pos_x, pos_y)
+                    SELECT node_type, monitor_id, pos_x, pos_y FROM topology_layout;
+                DROP TABLE topology_layout;
+                ALTER TABLE topology_layout_new RENAME TO topology_layout;
+            """)
+            print("[DB] Migrated: topology_layout now keyed by (node_type, monitor_id).")
+    except Exception as e:
+        print(f"[DB] WARNING: topology_layout composite-key migration skipped: {e}")
+
     # Migration: create incidents table (Feature: Incident Management)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS incidents (
@@ -721,9 +814,9 @@ def init_db():
     if count == 0:
         conn.execute(
             "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            ("croitadmin", hash_password("N03ntry#_PCR3m0T#"), "admin")
+            ("rstadmin", hash_password("N03ntry#_PCR3m0T#"), "admin")
         )
-        print("[DB] Default admin user created: croitadmin")
+        print("[DB] Default admin user created: rstadmin")
     print("[DB] Initialized.")
 
 
@@ -1679,7 +1772,7 @@ def send_weekly_report():
 <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f8;margin:0;padding:20px">
 <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
   <div style="background:linear-gradient(135deg,#1a6eb5,#1a9e5c);padding:28px 32px;color:#fff">
-    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;opacity:.8">CROIT</div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;opacity:.8">RST</div>
     <div style="font-size:22px;font-weight:800;margin-top:4px">Weekly Uptime Report</div>
     <div style="font-size:13px;opacity:.8;margin-top:6px">{week_label}</div>
   </div>
@@ -1707,7 +1800,7 @@ def send_weekly_report():
     </table>
   </div>
   <div style="padding:16px 32px;border-top:1px solid #dde1e7;font-size:11px;color:#8a94a6;text-align:center">
-    CROIT Uptime Monitoring &nbsp;·&nbsp; Auto-generated report &nbsp;·&nbsp; {now.strftime('%d %b %Y %H:%M')} UTC
+    RST Uptime Monitoring &nbsp;·&nbsp; Auto-generated report &nbsp;·&nbsp; {now.strftime('%d %b %Y %H:%M')} UTC
   </div>
 </div>
 </body></html>"""
@@ -1716,7 +1809,7 @@ def send_weekly_report():
     from email.mime.text import MIMEText as _MIMEText
     recipients = [r.strip() for r in smtp_to.split(",") if r.strip()]
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[CROIT] Weekly Uptime Report — {week_label}"
+    msg["Subject"] = f"[RST] Weekly Uptime Report — {week_label}"
     msg["From"]    = smtp_from
     msg["To"]      = ", ".join(recipients)
     msg.attach(_MIMEText(html_body, "html"))
@@ -2677,20 +2770,123 @@ def api_send_weekly_report():
 # API — Topology & Dependencies
 # ─────────────────────────────────────────────
 
+def _topo_node_id(node_type, raw_id):
+    """Composite node id unique across monitor/db/server types, e.g. 'server:7'."""
+    return f"{node_type}:{raw_id}"
+
+
+def _server_topology_status(server_id, conn):
+    """Lightweight server health for the topology map — same aggregation rule as
+    _server_with_health (critical/degraded/healthy/pending/unknown) but without the
+    extra patch-info lookups that function does, since topology renders many servers
+    at once and doesn't need that detail per node."""
+    mons = conn.execute(
+        """SELECT m.id, m.enabled FROM monitors m
+           JOIN server_monitors sm ON sm.monitor_id = m.id
+           WHERE sm.server_id = ?""", (server_id,)
+    ).fetchall()
+    dbs = conn.execute(
+        """SELECT d.id, d.enabled FROM db_monitors d
+           JOIN server_db_monitors sdm ON sdm.db_id = d.id
+           WHERE sdm.server_id = ?""", (server_id,)
+    ).fetchall()
+
+    statuses = []
+    for m in mons:
+        if not m["enabled"]:
+            continue
+        last = conn.execute(
+            "SELECT status FROM heartbeats WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1", (m["id"],)
+        ).fetchone()
+        statuses.append("up" if last and last["status"] == 1 else ("down" if last else "pending"))
+    for d in dbs:
+        if not d["enabled"]:
+            continue
+        last = conn.execute(
+            "SELECT status FROM db_heartbeats WHERE db_id=? ORDER BY checked_at DESC LIMIT 1", (d["id"],)
+        ).fetchone()
+        statuses.append("up" if last and last["status"] == 1 else ("down" if last else "pending"))
+
+    down = statuses.count("down")
+    up   = statuses.count("up")
+    total = len(statuses)
+    if total == 0:
+        health = "unknown"
+    elif down:
+        health = "critical" if down > total / 2 else "degraded"
+    elif any(s == "pending" for s in statuses):
+        health = "pending"
+    else:
+        health = "healthy"
+    return health, up, down, total
+
+
 @app.route("/api/topology", methods=["GET"])
 @role_required(['admin', 'viewer'])
 def api_get_topology():
-    """Return all monitors with their dependencies and current status."""
+    """
+    Build the full service topology graph.
+
+    Nodes come from three sources: HTTP/TCP monitors, DB monitors, and servers.
+    Edges come from two sources:
+      - AUTO edges ("hosts"): derived live from server_monitors / server_db_monitors
+        every time this loads — these never go stale because they're the same
+        links already maintained in Server Inventory, not hand-drawn here.
+      - MANUAL edges: the dependencies table, for cross-cutting relationships that
+        can't be inferred (e.g. "RCM depends on Keycloak for token introspection").
+
+    Health propagation: a monitor/db hosted on a server that is 'critical' or
+    'degraded' gets at_risk=true so the UI can flag it, without altering its own
+    real up/down status (the server being unhealthy doesn't mean the service on
+    it is actually failing — it's a risk signal, not a status override).
+    """
     with DB_LOCK, get_db() as conn:
-        monitors = conn.execute("SELECT * FROM monitors ORDER BY id").fetchall()
-        deps = conn.execute("SELECT * FROM dependencies ORDER BY id").fetchall()
-        layout = conn.execute("SELECT * FROM topology_layout").fetchall()
-    
-    layout_map = {r["monitor_id"]: {"x": r["pos_x"], "y": r["pos_y"]} for r in layout}
-    
+        monitors    = conn.execute("SELECT * FROM monitors ORDER BY id").fetchall()
+        db_monitors = conn.execute("SELECT * FROM db_monitors ORDER BY id").fetchall()
+        servers     = conn.execute("SELECT * FROM servers ORDER BY id").fetchall()
+        deps        = conn.execute("SELECT * FROM dependencies ORDER BY id").fetchall()
+        layout_rows = conn.execute("SELECT * FROM topology_layout").fetchall()
+        server_monitor_links    = conn.execute("SELECT server_id, monitor_id FROM server_monitors").fetchall()
+        server_db_monitor_links = conn.execute("SELECT server_id, db_id FROM server_db_monitors").fetchall()
+
+    layout_map = {(r["node_type"], r["monitor_id"]): {"x": r["pos_x"], "y": r["pos_y"]} for r in layout_rows}
+
     nodes = []
+    at_risk_monitor_ids = set()
+    at_risk_db_ids      = set()
+    server_health_map   = {}
+
+    # Servers first, so we know which monitors/dbs are at risk before building their nodes
+    with DB_LOCK, get_db() as conn:
+        for s in servers:
+            health, up, down, total = _server_topology_status(s["id"], conn)
+            server_health_map[s["id"]] = health
+            if health in ("critical", "degraded"):
+                for link in server_monitor_links:
+                    if link["server_id"] == s["id"]:
+                        at_risk_monitor_ids.add(link["monitor_id"])
+                for link in server_db_monitor_links:
+                    if link["server_id"] == s["id"]:
+                        at_risk_db_ids.add(link["db_id"])
+            pos = layout_map.get(("server", s["id"]), {"x": 0, "y": 0})
+            # Map server health onto the same status vocabulary the UI already uses,
+            # plus a 'degraded' state the frontend renders as amber.
+            status = {"healthy": "up", "critical": "down", "degraded": "degraded",
+                      "pending": "pending", "unknown": "paused"}.get(health, "paused")
+            nodes.append({
+                "id": _topo_node_id("server", s["id"]),
+                "node_type": "server",
+                "raw_id": s["id"],
+                "name": s["hostname"],
+                "group": s["environment"] or "PROD",
+                "status": status,
+                "environment": s["environment"],
+                "role": s["role"],
+                "up_count": up, "down_count": down, "total_monitors": total,
+                "x": pos["x"], "y": pos["y"],
+            })
+
     for m in monitors:
-        # Get current status
         with DB_LOCK, get_db() as conn:
             last = conn.execute(
                 "SELECT status FROM heartbeats WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1",
@@ -2701,57 +2897,137 @@ def api_get_topology():
             status = "paused"
         elif last:
             status = "up" if last["status"] == 1 else "down"
-        
-        pos = layout_map.get(m["id"], {"x": 0, "y": 0})
+
+        pos = layout_map.get(("monitor", m["id"]), {"x": 0, "y": 0})
         nodes.append({
-            "id": m["id"],
+            "id": _topo_node_id("monitor", m["id"]),
+            "node_type": "monitor",
+            "raw_id": m["id"],
             "name": m["name"],
             "group": m["group_name"] or "General",
             "status": status,
-            "x": pos["x"],
-            "y": pos["y"]
+            "url": m["url"],
+            "at_risk": m["id"] in at_risk_monitor_ids,
+            "x": pos["x"], "y": pos["y"],
         })
-    
-    edges = [{"id": d["id"], "from": d["monitor_id"], "to": d["depends_on"], "label": d["label"]} for d in deps]
-    
+
+    for d in db_monitors:
+        with DB_LOCK, get_db() as conn:
+            last = conn.execute(
+                "SELECT status FROM db_heartbeats WHERE db_id=? ORDER BY checked_at DESC LIMIT 1",
+                (d["id"],)
+            ).fetchone()
+        status = "pending"
+        if not d["enabled"]:
+            status = "paused"
+        elif last:
+            status = "up" if last["status"] == 1 else "down"
+
+        pos = layout_map.get(("db", d["id"]), {"x": 0, "y": 0})
+        nodes.append({
+            "id": _topo_node_id("db", d["id"]),
+            "node_type": "db",
+            "raw_id": d["id"],
+            "name": d["name"],
+            "group": d["group_name"] or "Database",
+            "status": status,
+            "db_type": d["db_type"],
+            "at_risk": d["id"] in at_risk_db_ids,
+            "x": pos["x"], "y": pos["y"],
+        })
+
+    # Auto edges: server "hosts" monitor/db — always derived live, never hand-maintained
+    edges = []
+    for link in server_monitor_links:
+        edges.append({
+            "id": f"auto-sm-{link['server_id']}-{link['monitor_id']}",
+            "from": _topo_node_id("server", link["server_id"]),
+            "to":   _topo_node_id("monitor", link["monitor_id"]),
+            "label": "hosts", "auto": True,
+        })
+    for link in server_db_monitor_links:
+        edges.append({
+            "id": f"auto-sd-{link['server_id']}-{link['db_id']}",
+            "from": _topo_node_id("server", link["server_id"]),
+            "to":   _topo_node_id("db", link["db_id"]),
+            "label": "hosts", "auto": True,
+        })
+
+    # Manual edges: hand-drawn cross-cutting dependencies.
+    # Defensive: dict(d).get(...) rather than d["monitor_type"] — if the
+    # monitor_type/depends_on_type migration was ever missed on an older row
+    # (e.g. a transient lock during startup, or a restored backup from before
+    # these columns existed), fall back to 'monitor' instead of raising and
+    # taking the whole topology page down.
+    for d in deps:
+        dd = dict(d)
+        edges.append({
+            "id": dd["id"],
+            "from": _topo_node_id(dd.get("monitor_type") or "monitor", dd["monitor_id"]),
+            "to":   _topo_node_id(dd.get("depends_on_type") or "monitor", dd["depends_on"]),
+            "label": dd["label"], "auto": False,
+        })
+
     return jsonify({"nodes": nodes, "edges": edges})
 
 
 @app.route("/api/topology/dependencies", methods=["GET"])
 @role_required(['admin', 'viewer'])
 def api_list_dependencies():
-    """List all dependencies with monitor names."""
+    """List all MANUAL dependencies (auto 'hosts' edges are not stored rows, so
+    they don't appear here — they're derived fresh by /api/topology every load)."""
+    def _name_for(node_type, raw_id, conn):
+        table = {"monitor": "monitors", "db": "db_monitors", "server": "servers"}.get(node_type)
+        col   = "hostname" if node_type == "server" else "name"
+        if not table:
+            return "Unknown"
+        row = conn.execute(f"SELECT {col} AS n FROM {table} WHERE id=?", (raw_id,)).fetchone()
+        return row["n"] if row else "Unknown"
+
     with DB_LOCK, get_db() as conn:
-        rows = conn.execute("""
-            SELECT d.id, d.monitor_id, d.depends_on, d.label,
-                   m1.name as monitor_name, m2.name as depends_on_name
-            FROM dependencies d
-            JOIN monitors m1 ON m1.id = d.monitor_id
-            JOIN monitors m2 ON m2.id = d.depends_on
-            ORDER BY d.id
-        """).fetchall()
-    return jsonify([dict(r) for r in rows])
+        rows = conn.execute("SELECT * FROM dependencies ORDER BY id").fetchall()
+        result = []
+        for d in rows:
+            dd = dict(d)
+            m_type = dd.get("monitor_type") or "monitor"
+            d_type = dd.get("depends_on_type") or "monitor"
+            result.append({
+                "id": dd["id"],
+                "monitor_type": m_type, "monitor_id": dd["monitor_id"],
+                "depends_on_type": d_type, "depends_on": dd["depends_on"],
+                "label": dd["label"],
+                "monitor_name": _name_for(m_type, dd["monitor_id"], conn),
+                "depends_on_name": _name_for(d_type, dd["depends_on"], conn),
+            })
+    return jsonify(result)
 
 
 @app.route("/api/topology/dependencies", methods=["POST"])
 @role_required(['admin', 'viewer'])
 def api_add_dependency():
-    """Add a dependency link: monitor_id depends on depends_on."""
+    """Add a MANUAL dependency link: (monitor_type, monitor_id) depends on
+    (depends_on_type, depends_on). Types: 'monitor' | 'db' | 'server'.
+    monitor_type/depends_on_type default to 'monitor' for backward compatibility."""
     d = request.get_json()
-    monitor_id = d.get("monitor_id")
-    depends_on = d.get("depends_on")
+    monitor_type    = d.get("monitor_type", "monitor")
+    monitor_id      = d.get("monitor_id")
+    depends_on_type = d.get("depends_on_type", "monitor")
+    depends_on      = d.get("depends_on")
     label = d.get("label", "")
-    
+
     if not monitor_id or not depends_on:
         return jsonify({"error": "monitor_id and depends_on required"}), 400
-    if monitor_id == depends_on:
+    if monitor_type not in ("monitor", "db", "server") or depends_on_type not in ("monitor", "db", "server"):
+        return jsonify({"error": "type must be one of monitor, db, server"}), 400
+    if monitor_type == depends_on_type and monitor_id == depends_on:
         return jsonify({"error": "Cannot depend on itself"}), 400
-    
+
     try:
         with DB_LOCK, get_db() as conn:
             cur = conn.execute(
-                "INSERT INTO dependencies (monitor_id, depends_on, label) VALUES (?, ?, ?)",
-                (monitor_id, depends_on, label)
+                """INSERT INTO dependencies (monitor_id, depends_on, label, monitor_type, depends_on_type)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (monitor_id, depends_on, label, monitor_type, depends_on_type)
             )
             row = conn.execute("SELECT * FROM dependencies WHERE id=?", (cur.lastrowid,)).fetchone()
         return jsonify(dict(row)), 201
@@ -2762,70 +3038,87 @@ def api_add_dependency():
 @app.route("/api/topology/dependencies/<int:did>", methods=["DELETE"])
 @role_required(['admin', 'viewer'])
 def api_delete_dependency(did):
-    """Delete a dependency link."""
+    """Delete a manual dependency link."""
     with DB_LOCK, get_db() as conn:
         conn.execute("DELETE FROM dependencies WHERE id=?", (did,))
     return jsonify({"deleted": did})
 
 
-@app.route("/api/topology/impact/<int:mid>", methods=["GET"])
+@app.route("/api/topology/impact/<node_type>/<int:raw_id>", methods=["GET"])
 @role_required(['admin', 'viewer'])
-def api_get_impact(mid):
-    """Get impact analysis: what services depend on this one (directly or indirectly)."""
+def api_get_impact(node_type, raw_id):
+    """Impact analysis: what (directly or indirectly) depends on this node, walking
+    BOTH auto 'hosts' edges and manual dependency edges — e.g. if a server goes
+    down, every monitor/db it hosts is impacted, plus anything that manually
+    depends on those."""
+    if node_type not in ("monitor", "db", "server"):
+        return jsonify({"error": "type must be one of monitor, db, server"}), 400
+
     with DB_LOCK, get_db() as conn:
-        # Get all dependencies
-        deps = conn.execute("SELECT monitor_id, depends_on FROM dependencies").fetchall()
-        monitors = conn.execute("SELECT id, name FROM monitors").fetchall()
-    
-    # Build dependency graph (reverse: depends_on -> [monitor_ids])
+        deps = conn.execute("SELECT monitor_type, monitor_id, depends_on_type, depends_on FROM dependencies").fetchall()
+        server_monitor_links    = conn.execute("SELECT server_id, monitor_id FROM server_monitors").fetchall()
+        server_db_monitor_links = conn.execute("SELECT server_id, db_id FROM server_db_monitors").fetchall()
+        monitors    = conn.execute("SELECT id, name FROM monitors").fetchall()
+        db_monitors = conn.execute("SELECT id, name FROM db_monitors").fetchall()
+        servers     = conn.execute("SELECT id, hostname FROM servers").fetchall()
+
+    name_map = {}
+    for m in monitors:    name_map[("monitor", m["id"])] = m["name"]
+    for d in db_monitors: name_map[("db", d["id"])]      = d["name"]
+    for s in servers:     name_map[("server", s["id"])]  = s["hostname"]
+
+    # Reverse graph: depends_on -> [dependents], built from both auto hosts-edges and manual deps
     graph = {}
+    def _link(target_key, source_key):
+        graph.setdefault(target_key, []).append(source_key)
+
+    for link in server_monitor_links:
+        _link(("server", link["server_id"]), ("monitor", link["monitor_id"]))
+    for link in server_db_monitor_links:
+        _link(("server", link["server_id"]), ("db", link["db_id"]))
     for d in deps:
-        if d["depends_on"] not in graph:
-            graph[d["depends_on"]] = []
-        graph[d["depends_on"]].append(d["monitor_id"])
-    
-    # BFS to find all impacted services
+        _link((d["depends_on_type"], d["depends_on"]), (d["monitor_type"], d["monitor_id"]))
+
+    start = (node_type, raw_id)
     impacted = set()
-    queue = [mid]
+    queue = [start]
     visited = set()
-    
     while queue:
         current = queue.pop(0)
         if current in visited:
             continue
         visited.add(current)
-        if current != mid:
+        if current != start:
             impacted.add(current)
         if current in graph:
             queue.extend(graph[current])
-    
-    # Get monitor names
-    monitor_map = {m["id"]: m["name"] for m in monitors}
-    result = [{"id": i, "name": monitor_map.get(i, "Unknown")} for i in impacted]
-    
-    return jsonify({"monitor_id": mid, "impacted": result})
+
+    result = [{"type": t, "id": i, "name": name_map.get((t, i), "Unknown")} for (t, i) in impacted]
+    return jsonify({"node_type": node_type, "raw_id": raw_id, "impacted": result})
 
 
 @app.route("/api/topology/layout", methods=["POST"])
 @role_required(['admin', 'viewer'])
 def api_save_layout():
-    """Save node positions for topology map."""
-    positions = request.get_json()  # [{monitor_id, x, y}, ...]
+    """Save node positions for the topology map. Each item: {node_type, monitor_id, x, y}.
+    node_type defaults to 'monitor' for backward compatibility with older clients."""
+    positions = request.get_json()  # [{node_type, monitor_id, x, y}, ...]
     if not isinstance(positions, list):
         return jsonify({"error": "Expected array of positions"}), 400
-    
+
     with DB_LOCK, get_db() as conn:
         for pos in positions:
             mid = pos.get("monitor_id")
+            node_type = pos.get("node_type", "monitor")
             x = pos.get("x", 0)
             y = pos.get("y", 0)
             if mid:
                 conn.execute("""
-                    INSERT INTO topology_layout (monitor_id, pos_x, pos_y)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(monitor_id) DO UPDATE SET pos_x=excluded.pos_x, pos_y=excluded.pos_y
-                """, (mid, x, y))
-    
+                    INSERT INTO topology_layout (node_type, monitor_id, pos_x, pos_y)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(node_type, monitor_id) DO UPDATE SET pos_x=excluded.pos_x, pos_y=excluded.pos_y
+                """, (node_type, mid, x, y))
+
     return jsonify({"ok": True})
 
 
@@ -3754,7 +4047,7 @@ def _check_agent_thresholds(server_id, metrics):
                 body = f"Server: {hostname} ({env})\n\n" + "\n".join(f"⚠ {a}" for a in alerts)
                 body += f"\n\nTime: {datetime.now()}\nDashboard: https://frm-rbautodev01:9443/"
                 m = MIMEText(body)
-                m["Subject"] = f"[CROIT Server Alert] {hostname} — {len(alerts)} alert{'s' if len(alerts)>1 else ''}"
+                m["Subject"] = f"[RST Server Alert] {hostname} — {len(alerts)} alert{'s' if len(alerts)>1 else ''}"
                 m["From"]    = get_setting("smtp_from", "")
                 m["To"]      = ", ".join(recipients)
                 smtp_port = int(get_setting("smtp_port", "25"))
@@ -3891,7 +4184,7 @@ def _check_service_alerts(server_id, process_services):
                         f"Ports: {ports_info or '-'}\n\n"
                         f"Time: {datetime.now()}\nDashboard: https://frm-rbautodev01:9443/"
                     )
-                    _send_email(f"[CROIT Service Alert] {hostname} — {name} DOWN", body)
+                    _send_email(f"[RST Service Alert] {hostname} — {name} DOWN", body)
                     _record_alert_sent(key)
 
             # Transition down -> running (recovery)
@@ -3910,7 +4203,7 @@ def _check_service_alerts(server_id, process_services):
                         f"Ports: {ports_info or '-'}\n\n"
                         f"Time: {datetime.now()}\nDashboard: https://frm-rbautodev01:9443/"
                     )
-                    _send_email(f"[CROIT Service Alert] {hostname} — {name} RECOVERED", body)
+                    _send_email(f"[RST Service Alert] {hostname} — {name} RECOVERED", body)
                     _record_alert_sent(key)
             # else: status unchanged — no event, no email
     except Exception as e:
@@ -3977,7 +4270,7 @@ def _fetch_latest_version(tracker):
             # Use GitHub API — add token via settings to raise rate limit from 60 to 5000/hr
             api_url = f"https://api.github.com/repos/{check_source}/releases/latest"
             gh_token = get_setting("github_token", "")
-            headers  = {"Accept": "application/vnd.github+json", "User-Agent": "CROIT-Monitor/1.0"}
+            headers  = {"Accept": "application/vnd.github+json", "User-Agent": "RST-Monitor/1.0"}
             if gh_token:
                 headers["Authorization"] = f"Bearer {gh_token}"
             resp = requests.get(api_url, timeout=10, headers=headers)
@@ -3989,14 +4282,14 @@ def _fetch_latest_version(tracker):
         elif check_type == "jenkins_update_center":
             # Jenkins publishes latest LTS version as plain text
             resp = requests.get(check_source, timeout=10,
-                                headers={"User-Agent": "CROIT-Monitor/1.0"})
+                                headers={"User-Agent": "RST-Monitor/1.0"})
             if resp.status_code == 200:
                 return resp.text.strip() or None
             return None
 
         elif check_type == "url_regex":
             resp = requests.get(check_source, timeout=15,
-                                headers={"User-Agent": "CROIT-Monitor/1.0"})
+                                headers={"User-Agent": "RST-Monitor/1.0"})
             if resp.status_code == 200 and regex_pat:
                 m = re.search(regex_pat, resp.text)
                 if m:
@@ -4125,7 +4418,7 @@ def _send_version_alert(server_id, hostname, outdated_list):
     smtp_port  = int(get_setting("smtp_port", "25"))
     smtp_from  = get_setting("smtp_from", "")
     recipients = [r.strip() for r in smtp_to.split(",") if r.strip()]
-    subject    = f"[CROIT SW Update] {hostname} — {len(outdated_list)} outdated package{'s' if len(outdated_list) > 1 else ''}"
+    subject    = f"[RST SW Update] {hostname} — {len(outdated_list)} outdated package{'s' if len(outdated_list) > 1 else ''}"
 
     try:
         m = MIMEText("\n".join(lines))
@@ -4376,7 +4669,7 @@ def _check_software_eol_alert(server_id):
 
     total   = len(eol_packages) + len(high_risk_packages)
     subject = (
-        f"[CROIT SW Alert] {hostname} — "
+        f"[RST SW Alert] {hostname} — "
         f"{len(eol_packages)} EOL, {len(high_risk_packages)} High/Critical risk"
     )
 
@@ -5070,21 +5363,28 @@ def api_export():
                 "SELECT name_pattern, vendor, license_type, support_status, risk_rating, notes FROM software_catalogue"
             ).fetchall()]
 
-            # Service dependencies
+            # Service dependencies — backup/restore only supports monitor<->monitor
+            # links by name+url (servers/db monitors aren't portable the same way
+            # across environments). Explicitly filter by type so a cross-type
+            # dependency (monitor_type/depends_on_type = 'server' or 'db') can
+            # never be joined against the wrong row in the monitors table.
             dep_rows = conn.execute(
                 """SELECT m1.name AS monitor_name, m1.url AS monitor_url,
                           m2.name AS depends_on_name, m2.url AS depends_on_url, d.label
                    FROM dependencies d
                    JOIN monitors m1 ON m1.id = d.monitor_id
-                   JOIN monitors m2 ON m2.id = d.depends_on"""
+                   JOIN monitors m2 ON m2.id = d.depends_on
+                   WHERE d.monitor_type='monitor' AND d.depends_on_type='monitor'"""
             ).fetchall()
             service_dependencies = [dict(r) for r in dep_rows]
 
-            # Topology positions
+            # Topology positions — same monitor-only restriction as above, for the
+            # same reason (node_type may now be 'server' or 'db').
             topo_rows = conn.execute(
                 """SELECT m.name AS monitor_name, m.url AS monitor_url, tl.pos_x, tl.pos_y
                    FROM topology_layout tl
-                   JOIN monitors m ON m.id = tl.monitor_id"""
+                   JOIN monitors m ON m.id = tl.monitor_id
+                   WHERE tl.node_type='monitor'"""
             ).fetchall()
             topology_positions = [dict(r) for r in topo_rows]
 
@@ -5118,7 +5418,7 @@ def api_export():
         response = app.response_class(
             json.dumps(export_data, indent=2, default=str),
             mimetype="application/json",
-            headers={"Content-Disposition": f'attachment; filename="croit-monitor-backup-{today}.json"'}
+            headers={"Content-Disposition": f'attachment; filename="rst-monitor-backup-{today}.json"'}
         )
         return response
 
@@ -5381,14 +5681,16 @@ def _perform_import(conn, data, mode):
             continue
         if mode == "merge":
             existing = conn.execute(
-                "SELECT id FROM dependencies WHERE monitor_id=? AND depends_on=?",
+                "SELECT id FROM dependencies WHERE monitor_type='monitor' AND monitor_id=? "
+                "AND depends_on_type='monitor' AND depends_on=?",
                 (mon1["id"], mon2["id"])
             ).fetchone()
             if existing:
                 skipped += 1
                 continue
         conn.execute(
-            "INSERT INTO dependencies (monitor_id, depends_on, label) VALUES (?,?,?)",
+            "INSERT INTO dependencies (monitor_id, depends_on, label, monitor_type, depends_on_type) "
+            "VALUES (?,?,?,'monitor','monitor')",
             (mon1["id"], mon2["id"], dep.get("label"))
         )
         inserted += 1
@@ -5404,12 +5706,14 @@ def _perform_import(conn, data, mode):
             skipped += 1
             continue
         if mode == "merge":
-            existing = conn.execute("SELECT monitor_id FROM topology_layout WHERE monitor_id=?", (mon["id"],)).fetchone()
+            existing = conn.execute(
+                "SELECT monitor_id FROM topology_layout WHERE node_type='monitor' AND monitor_id=?", (mon["id"],)
+            ).fetchone()
             if existing:
                 skipped += 1
                 continue
         conn.execute(
-            "INSERT OR REPLACE INTO topology_layout (monitor_id, pos_x, pos_y) VALUES (?,?,?)",
+            "INSERT OR REPLACE INTO topology_layout (node_type, monitor_id, pos_x, pos_y) VALUES ('monitor',?,?,?)",
             (mon["id"], tp.get("pos_x", 0), tp.get("pos_y", 0))
         )
         inserted += 1

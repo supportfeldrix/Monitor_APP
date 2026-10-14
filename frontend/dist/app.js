@@ -1854,7 +1854,7 @@ async function doExportBackup() {
     const blob = await res.blob();
     const disposition = res.headers.get('Content-Disposition') || '';
     const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-    const filename = filenameMatch ? filenameMatch[1] : 'croit-monitor-backup.json';
+    const filename = filenameMatch ? filenameMatch[1] : 'RST-monitor-backup.json';
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -2226,54 +2226,55 @@ function topoToggleShowAll() {
 const TOPO_NODE_W  = 160;
 const TOPO_NODE_H  = 52;
 const TOPO_COLORS  = {
-  up:      { fill: '#e8faf2', stroke: '#1a9e5c', dot: '#1a9e5c' },
-  down:    { fill: '#fef2f2', stroke: '#e53e3e', dot: '#e53e3e' },
-  paused:  { fill: '#f0f2f5', stroke: '#8a94a6', dot: '#8a94a6' },
-  pending: { fill: '#fffbeb', stroke: '#d97706', dot: '#d97706' },
+  up:       { fill: '#e8faf2', stroke: '#1a9e5c', dot: '#1a9e5c' },
+  down:     { fill: '#fef2f2', stroke: '#e53e3e', dot: '#e53e3e' },
+  paused:   { fill: '#f0f2f5', stroke: '#8a94a6', dot: '#8a94a6' },
+  pending:  { fill: '#fffbeb', stroke: '#d97706', dot: '#d97706' },
+  // Server health states that aren't plain up/down (used only for server nodes)
+  degraded: { fill: '#fff7e6', stroke: '#d97706', dot: '#d97706' },
 };
+// Small icon prefix per node type so monitors/servers/databases are visually distinct
+// at a glance, without needing a legend lookup.
+const TOPO_TYPE_ICON = { monitor: '📡', db: '🗄', server: '🖥' };
+const TOPO_TYPE_LABEL = { monitor: 'Monitor', db: 'Database', server: 'Server' };
+
+// Parse a composite topology node id ("server:7") into { type, rawId }
+function topoParseId(compositeId) {
+  const idx = String(compositeId).indexOf(':');
+  if (idx === -1) return { type: 'monitor', rawId: compositeId };
+  return { type: compositeId.slice(0, idx), rawId: compositeId.slice(idx + 1) };
+}
 
 async function loadTopology() {
   try {
-    const [topoRes, monRes, statusRes] = await Promise.all([
-      fetch(`${API}/api/topology`, { credentials: 'include' }),
-      fetch(`${API}/api/monitors`, { credentials: 'include' }),
-      fetch(`${API}/api/status?preset=1h`, { credentials: 'include' })
-    ]);
+    // /api/topology now returns fully-computed nodes (monitors, db monitors, AND
+    // servers) with live status/position already resolved server-side, plus two
+    // kinds of edges: auto "hosts" links (server -> monitor/db, derived live from
+    // Server Inventory — never stale, never hand-maintained) and manual
+    // dependency links (the dependencies table, for cross-cutting relationships
+    // that can't be inferred, e.g. "RCM depends on Keycloak").
+    const topoRes = await fetch(`${API}/api/topology`, { credentials: 'include' });
     topoData = await topoRes.json();
-    const monitors  = await monRes.json();
-    const statusArr = await statusRes.json();
 
-    // Build status+stats map keyed by monitor id
-    const statsMap = {};
-    statusArr.forEach(m => { statsMap[m.id] = m; });
+    // Separately pull latency/uptime stats for monitor nodes only (servers/dbs
+    // don't have this concept the same way) to enrich edge labels + tooltips.
+    let statsMap = {};
+    try {
+      const statusRes = await fetch(`${API}/api/status?preset=1h`, { credentials: 'include' });
+      const statusArr = await statusRes.json();
+      statusArr.forEach(m => { statsMap[_topoNodeIdLocal('monitor', m.id)] = m; });
+    } catch(e) { /* stats are an enrichment, not required */ }
 
-    // Preserve layout positions
-    const layoutMap = {};
-    topoData.nodes.forEach(n => { layoutMap[n.id] = { x: n.x, y: n.y }; });
-
-    // Build clean node list from monitors (no duplicates)
-    topoData.nodes = monitors.map(m => {
-      const pos   = layoutMap[m.id] || { x: 0, y: 0 };
-      const stats = statsMap[m.id]  || {};
-      const last  = stats.current_status;
-      let status  = 'pending';
-      if (!m.enabled)          status = 'paused';
-      else if (last?.status === 1) status = 'up';
-      else if (last?.status === 0) status = 'down';
-      return {
-        id:          m.id,
-        name:        m.name,
-        group:       m.group_name || 'General',
-        status,
-        uptime_pct:  stats.uptime_pct  ?? null,
-        avg_latency: stats.avg_latency ?? null,
-        total_checks:stats.total_checks ?? 0,
-        x: pos.x,
-        y: pos.y
-      };
+    topoData.nodes.forEach(n => {
+      const stats = statsMap[n.id];
+      if (stats) {
+        n.uptime_pct   = stats.uptime_pct   ?? null;
+        n.avg_latency  = stats.avg_latency  ?? null;
+        n.total_checks = stats.total_checks ?? 0;
+      }
     });
 
-    // Enrich edges with dependency latency (avg latency of the "to" node)
+    // Enrich edges with dependency latency (avg latency of the "to" node, when it's a monitor)
     topoData.edges.forEach(edge => {
       const toNode = topoData.nodes.find(n => n.id === edge.to);
       edge.latency = toNode?.avg_latency ?? null;
@@ -2292,13 +2293,19 @@ async function loadTopology() {
   }
 }
 
+// Local helper mirroring the backend's composite id format (avoids a name clash
+// with the shared topoParseId / lets this file build ids the same way the API does)
+function _topoNodeIdLocal(nodeType, rawId) { return `${nodeType}:${rawId}`; }
+
 function updateTopoStats() {
   const up    = topoData.nodes.filter(n => n.status === 'up').length;
   const down  = topoData.nodes.filter(n => n.status === 'down').length;
   const total = topoData.nodes.length;
-  const deps  = topoData.edges.length;
+  const manualDeps = topoData.edges.filter(e => !e.auto).length;
+  const atRisk = topoData.nodes.filter(n => n.at_risk).length;
   document.getElementById('topo-stats').textContent =
-    `${total} services · ${deps} dependencies · ${up} up · ${down} down`;
+    `${total} services · ${manualDeps} dependencies · ${up} up · ${down} down` +
+    (atRisk ? ` · ${atRisk} at risk` : '');
 }
 
 function topoSetView(v) {
@@ -2401,12 +2408,28 @@ function drawTopoCanvas() {
     const fy = from.y + fs.h / 2;
     const tx = to.x   + ts.w / 2;
     const ty = to.y   + ts.h / 2;
+    const cpx = (fx + tx) / 2;
+    const cpy = (fy + ty) / 2 - 40;
+
+    // Auto "hosts" edges (server -> monitor/db, derived live from Server Inventory)
+    // are drawn as a plain, de-emphasized dashed line — they're structural, not an
+    // operational dependency chain, so they shouldn't compete visually with manual
+    // dependency arrows or carry the animated "traffic flowing" dot.
+    if (edge.auto) {
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.quadraticCurveTo(cpx, cpy, tx, ty);
+      ctx.strokeStyle = '#c3c9d4';
+      ctx.lineWidth   = 1.2;
+      ctx.setLineDash([3, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      return;
+    }
 
     const depStatus = to.status;
     const edgeColor = depStatus === 'down'   ? '#e53e3e' :
                       depStatus === 'up'     ? '#1a9e5c' : '#8a94a6';
-    const cpx = (fx + tx) / 2;
-    const cpy = (fy + ty) / 2 - 40;
 
     // Arrow line
     ctx.beginPath();
@@ -2479,6 +2502,18 @@ function drawTopoCanvas() {
       ctx.strokeStyle = `rgba(229,62,62,${0.4 - pulse*0.3})`;
       ctx.lineWidth   = 2;
       ctx.stroke();
+    } else if (node.at_risk) {
+      // Health propagation: this monitor/db is itself reporting fine, but the
+      // server hosting it is critical/degraded — flag it as "at risk" with a
+      // static amber dashed ring (not pulsing, to visually distinguish it from
+      // an actual DOWN status).
+      ctx.beginPath();
+      roundRect(ctx, x - 5, y - 5, w + 10, h + 10, 11);
+      ctx.strokeStyle = 'rgba(217,119,6,0.55)';
+      ctx.lineWidth   = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Hover glow
@@ -2504,25 +2539,30 @@ function drawTopoCanvas() {
     ctx.fillStyle = colors.dot;
     ctx.fill();
 
-    // Service name
+    // Service name (type icon prefix so monitor/db/server are distinguishable at a glance)
     ctx.fillStyle = '#1a1f2e';
     ctx.font      = '600 12px -apple-system, sans-serif';
     ctx.textAlign = 'left';
+    const typeIcon = TOPO_TYPE_ICON[node.node_type] || '';
     const maxNameW = w - 36;
-    let name = node.name;
+    let name = (typeIcon ? typeIcon + ' ' : '') + node.name;
     if (ctx.measureText(name).width > maxNameW) {
       while (ctx.measureText(name + '…').width > maxNameW && name.length > 0) name = name.slice(0, -1);
       name += '…';
     }
     ctx.fillText(name, x + 28, y + 18);
 
-    // Stats line: uptime % + latency
-    const uptimeTxt  = node.uptime_pct  !== null ? `${node.uptime_pct.toFixed(1)}%` : '';
-    const latencyTxt = node.avg_latency !== null ? `${node.avg_latency}ms` : '';
-    const statsLine  = [uptimeTxt, latencyTxt].filter(Boolean).join(' · ');
-    ctx.fillStyle = node.uptime_pct !== null && node.uptime_pct < 90 ? '#d97706' : '#8a94a6';
+    // Stats line: uptime % + latency (monitors), or up/down counts (servers), plus
+    // an "AT RISK" flag when a healthy monitor/db is hosted on an unhealthy server
+    const uptimeTxt  = node.uptime_pct  !== null && node.uptime_pct  !== undefined ? `${node.uptime_pct.toFixed(1)}%` : '';
+    const latencyTxt = node.avg_latency !== null && node.avg_latency !== undefined ? `${node.avg_latency}ms` : '';
+    const serverCountsTxt = node.node_type === 'server' && node.total_monitors
+      ? `${node.up_count}/${node.total_monitors} up` : '';
+    let statsLine = [uptimeTxt, latencyTxt].filter(Boolean).join(' · ') || serverCountsTxt || node.group;
+    if (node.at_risk) statsLine = '⚠ AT RISK · ' + statsLine;
+    ctx.fillStyle = node.at_risk ? '#d97706' : (node.uptime_pct !== null && node.uptime_pct !== undefined && node.uptime_pct < 90 ? '#d97706' : '#8a94a6');
     ctx.font      = '10px sans-serif';
-    ctx.fillText(statsLine || node.group, x + 28, y + 33);
+    ctx.fillText(statsLine, x + 28, y + 33);
 
     // Status badge (top-right)
     const badgeText = node.status.toUpperCase();
@@ -2546,11 +2586,14 @@ function drawTopoCanvas() {
     const ttx    = node.x + w + 8;
     const tty    = node.y;
     const lines  = [
-      node.name,
+      `${TOPO_TYPE_ICON[node.node_type]||''} ${node.name}`,
+      `Type: ${TOPO_TYPE_LABEL[node.node_type] || 'Monitor'}`,
       `Status: ${node.status.toUpperCase()}`,
-      node.uptime_pct  !== null ? `Uptime: ${node.uptime_pct.toFixed(2)}%`  : null,
-      node.avg_latency !== null ? `Avg Latency: ${node.avg_latency}ms`       : null,
+      node.at_risk ? '⚠ AT RISK — hosting server is unhealthy' : null,
+      node.uptime_pct  !== null && node.uptime_pct  !== undefined ? `Uptime: ${node.uptime_pct.toFixed(2)}%`  : null,
+      node.avg_latency !== null && node.avg_latency !== undefined ? `Avg Latency: ${node.avg_latency}ms`       : null,
       node.total_checks ? `Checks: ${node.total_checks}` : null,
+      node.node_type === 'server' && node.total_monitors ? `Hosts: ${node.up_count}/${node.total_monitors} up` : null,
       `Group: ${node.group}`,
     ].filter(Boolean);
 
@@ -2697,54 +2740,87 @@ async function showImpactPanel(node) {
   body.innerHTML      = '<div class="loading-center" style="padding:16px"><div class="spinner"></div></div>';
 
   try {
-    const res    = await fetch(`${API}/api/topology/impact/${node.id}`, { credentials: 'include' });
+    const { type, rawId } = topoParseId(node.id);
+    const res    = await fetch(`${API}/api/topology/impact/${type}/${rawId}`, { credentials: 'include' });
     const data   = await res.json();
     const colors = TOPO_COLORS[node.status] || TOPO_COLORS.pending;
 
-    // What this node depends on
+    // What this node depends on — MANUAL dependency edges only (auto "hosts"
+    // edges are structural, not an operational dependency worth listing here)
     const dependsOn = topoData.edges
-      .filter(e => e.from === node.id)
+      .filter(e => !e.auto && e.from === node.id)
       .map(e => topoData.nodes.find(n => n.id === e.to))
       .filter(Boolean);
 
-    // What depends on this node
+    // What depends on this node (manual edges only)
     const dependents = topoData.edges
-      .filter(e => e.to === node.id)
+      .filter(e => !e.auto && e.to === node.id)
       .map(e => topoData.nodes.find(n => n.id === e.from))
+      .filter(Boolean);
+
+    // Servers hosting this node, and (for a server) what it hosts — from auto edges
+    const hostedOn = topoData.edges
+      .filter(e => e.auto && e.to === node.id)
+      .map(e => topoData.nodes.find(n => n.id === e.from))
+      .filter(Boolean);
+    const hosts = topoData.edges
+      .filter(e => e.auto && e.from === node.id)
+      .map(e => topoData.nodes.find(n => n.id === e.to))
       .filter(Boolean);
 
     const statusBadge = (s) => {
       const c = TOPO_COLORS[s] || TOPO_COLORS.pending;
       return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c.dot};margin-right:4px"></span>`;
     };
+    const typeIcon = TOPO_TYPE_ICON[node.node_type] || '';
 
     body.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
         <div>
-          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">This Service</div>
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">This ${esc(TOPO_TYPE_LABEL[node.node_type]||'Service')}</div>
           <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:${colors.fill};border:1px solid ${colors.stroke};border-radius:var(--radius)">
             <span style="width:10px;height:10px;border-radius:50%;background:${colors.dot};flex-shrink:0"></span>
-            <div>
-              <div style="font-weight:700;font-size:13px">${esc(node.name)}</div>
-              <div style="font-size:11px;color:var(--text3)">${esc(node.group)} · ${node.status.toUpperCase()}</div>
+            <div style="flex:1">
+              <div style="font-weight:700;font-size:13px">${typeIcon} ${esc(node.name)}</div>
+              <div style="font-size:11px;color:var(--text3)">${esc(node.group)} · ${node.status.toUpperCase()}${node.at_risk ? ' · <span style="color:var(--yellow)">⚠ AT RISK</span>' : ''}</div>
             </div>
           </div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="topoGoToDetail('${esc(node.id)}')">View Details →</button>
         </div>
+
+        ${hostedOn.length ? `
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Hosted On (${hostedOn.length})</div>
+          ${hostedOn.map(n => `
+            <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;font-size:12px;cursor:pointer" onclick="topoGoToDetail('${esc(n.id)}')">
+              ${statusBadge(n.status)}${TOPO_TYPE_ICON[n.node_type]||''} ${esc(n.name)}
+            </div>`).join('')}
+        </div>` : ''}
+
+        ${hosts.length ? `
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Hosts (${hosts.length})</div>
+          ${hosts.map(n => `
+            <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;font-size:12px;cursor:pointer" onclick="topoGoToDetail('${esc(n.id)}')">
+              ${statusBadge(n.status)}${TOPO_TYPE_ICON[n.node_type]||''} ${esc(n.name)}
+              ${n.status === 'down' ? '<span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--red)">⚠ DOWN</span>' : ''}
+            </div>`).join('')}
+        </div>` : ''}
 
         <div>
           <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Depends On (${dependsOn.length})</div>
           ${dependsOn.length ? dependsOn.map(n => `
             <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;font-size:12px">
-              ${statusBadge(n.status)}${esc(n.name)}
+              ${statusBadge(n.status)}${TOPO_TYPE_ICON[n.node_type]||''} ${esc(n.name)}
               ${n.status === 'down' ? '<span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--red)">⚠ DOWN</span>' : ''}
-            </div>`).join('') : '<div style="font-size:12px;color:var(--text3);padding:6px">No dependencies</div>'}
+            </div>`).join('') : '<div style="font-size:12px;color:var(--text3);padding:6px">No manual dependencies</div>'}
         </div>
 
         <div>
           <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Used By (${dependents.length})</div>
           ${dependents.length ? dependents.map(n => `
             <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;font-size:12px">
-              ${statusBadge(n.status)}${esc(n.name)}
+              ${statusBadge(n.status)}${TOPO_TYPE_ICON[n.node_type]||''} ${esc(n.name)}
             </div>`).join('') : '<div style="font-size:12px;color:var(--text3);padding:6px">Nothing depends on this</div>'}
         </div>
 
@@ -2755,13 +2831,34 @@ async function showImpactPanel(node) {
           ${data.impacted.length ? `
             <div style="padding:10px 14px;background:var(--red-dim);border:1px solid var(--red);border-radius:var(--radius)">
               <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:6px">⚠ If this goes DOWN, these are impacted:</div>
-              ${data.impacted.map(i => `<div style="font-size:12px;color:var(--text2);padding:2px 0">• ${esc(i.name)}</div>`).join('')}
+              ${data.impacted.map(i => `<div style="font-size:12px;color:var(--text2);padding:2px 0">• ${TOPO_TYPE_ICON[i.type]||''} ${esc(i.name)}</div>`).join('')}
             </div>` :
             '<div style="font-size:12px;color:var(--text3);padding:6px">No downstream impact</div>'}
         </div>
       </div>`;
   } catch(e) {
     body.innerHTML = `<div style="color:var(--red);font-size:12px">Error loading impact: ${esc(e.message)}</div>`;
+  }
+}
+
+// Click-through from a topology node to its existing detail view elsewhere in the app
+async function topoGoToDetail(compositeId) {
+  const { type, rawId } = topoParseId(compositeId);
+  const id = parseInt(rawId, 10);
+  if (type === 'server') {
+    navigate('servers');
+    setTimeout(() => openServerDetail(id), 150);
+  } else if (type === 'db') {
+    navigate('databases');
+    setTimeout(() => openDbDetail(id), 150);
+  } else {
+    // Monitor — jump to the dashboard and scroll to its panel. Load the monitor
+    // list directly and await it (rather than guessing a setTimeout delay against
+    // navigate()'s fire-and-forget refreshDashboard) so selectMonitor always has
+    // allMonitors populated by the time it runs.
+    navigate('dashboard');
+    await refreshDashboard();
+    selectMonitor(id);
   }
 }
 
@@ -2801,23 +2898,26 @@ function renderTopoSwimlane() {
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:16px;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius)">
           ${nodes.map(n => {
             const colors = TOPO_COLORS[n.status] || TOPO_COLORS.pending;
-            // Find what this node depends on
+            // Find what this node depends on — manual edges only (auto "hosts"
+            // links are structural, shown separately via the server node itself)
             const deps = topoData.edges
-              .filter(e => e.from === n.id)
+              .filter(e => !e.auto && e.from === n.id)
               .map(e => topoData.nodes.find(nd => nd.id === e.to))
               .filter(Boolean);
             const usedBy = topoData.edges
-              .filter(e => e.to === n.id)
+              .filter(e => !e.auto && e.to === n.id)
               .map(e => topoData.nodes.find(nd => nd.id === e.from))
               .filter(Boolean);
+            const typeIcon = TOPO_TYPE_ICON[n.node_type] || '';
 
             return `
-              <div onclick="topoSelectSwimlaneNode(${n.id})" style="cursor:pointer;min-width:180px;max-width:240px;flex:1;padding:12px 14px;background:${colors.fill};border:1.5px solid ${colors.stroke};border-radius:var(--radius);transition:box-shadow .15s" onmouseover="this.style.boxShadow='var(--shadow-md)'" onmouseout="this.style.boxShadow=''">
+              <div onclick="topoSelectSwimlaneNode('${esc(n.id)}')" style="cursor:pointer;min-width:180px;max-width:240px;flex:1;padding:12px 14px;background:${colors.fill};border:1.5px solid ${colors.stroke};border-radius:var(--radius);transition:box-shadow .15s" onmouseover="this.style.boxShadow='var(--shadow-md)'" onmouseout="this.style.boxShadow=''">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
                   <span style="width:10px;height:10px;border-radius:50%;background:${colors.dot};flex-shrink:0"></span>
-                  <span style="font-weight:700;font-size:13px;color:var(--text)">${esc(n.name)}</span>
+                  <span style="font-weight:700;font-size:13px;color:var(--text)">${typeIcon} ${esc(n.name)}</span>
                   <span style="margin-left:auto;font-size:9px;font-weight:700;color:${colors.dot};text-transform:uppercase">${n.status}</span>
                 </div>
+                ${n.at_risk ? `<div style="font-size:10px;color:var(--yellow);font-weight:700;margin-bottom:4px">⚠ AT RISK — host server unhealthy</div>` : ''}
                 ${deps.length ? `<div style="font-size:10px;color:var(--text3);margin-top:4px">→ Depends on: ${deps.map(d => `<span style="color:${TOPO_COLORS[d.status]?.dot||'#8a94a6'}">${esc(d.name)}</span>`).join(', ')}</div>` : ''}
                 ${usedBy.length ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">← Used by: ${usedBy.map(d => esc(d.name)).join(', ')}</div>` : ''}
               </div>`;
@@ -2845,13 +2945,15 @@ async function renderTopoDeps() {
       return;
     }
     tbody.innerHTML = deps.map(d => {
-      const fromNode = topoData.nodes.find(n => n.id === d.monitor_id);
-      const toNode   = topoData.nodes.find(n => n.id === d.depends_on);
+      const fromNode = topoData.nodes.find(n => n.id === _topoNodeIdLocal(d.monitor_type, d.monitor_id));
+      const toNode   = topoData.nodes.find(n => n.id === _topoNodeIdLocal(d.depends_on_type, d.depends_on));
       const fromColor = TOPO_COLORS[fromNode?.status]?.dot || '#8a94a6';
       const toColor   = TOPO_COLORS[toNode?.status]?.dot   || '#8a94a6';
+      const fromIcon  = TOPO_TYPE_ICON[d.monitor_type] || '';
+      const toIcon    = TOPO_TYPE_ICON[d.depends_on_type] || '';
       return `<tr>
-        <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${fromColor};margin-right:6px"></span>${esc(d.monitor_name)}</td>
-        <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${toColor};margin-right:6px"></span>${esc(d.depends_on_name)}</td>
+        <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${fromColor};margin-right:6px"></span>${fromIcon} ${esc(d.monitor_name)}</td>
+        <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${toColor};margin-right:6px"></span>${toIcon} ${esc(d.depends_on_name)}</td>
         <td style="color:var(--text3)">${esc(d.label || '–')}</td>
         <td><button class="btn btn-danger btn-sm" onclick="deleteDependency(${d.id})"><svg width="12" height="12"><use href="#ic-trash"/></svg></button></td>
       </tr>`;
@@ -2892,7 +2994,11 @@ function topoAutoLayout() {
 }
 
 async function saveTopoLayout() {
-  const positions = topoData.nodes.map(n => ({ monitor_id: n.id, x: n.x, y: n.y }));
+  const positions = topoData.nodes.map(n => ({
+    node_type: n.node_type || 'monitor',
+    monitor_id: n.raw_id != null ? n.raw_id : topoParseId(n.id).rawId,
+    x: n.x, y: n.y
+  }));
   try {
     await fetch(`${API}/api/topology/layout`, {
       method: 'POST',
@@ -2906,30 +3012,27 @@ async function saveTopoLayout() {
 // ── ADD / DELETE DEPENDENCY ───────────────────
 
 async function openAddDependencyModal() {
-  // Fetch fresh monitor list if topoData is empty
+  // Fetch fresh topology if empty (now covers monitors, db monitors, AND servers —
+  // manual dependencies can be drawn between any mix of the three types)
   if (!topoData.nodes || topoData.nodes.length === 0) {
     try {
-      const res = await fetch(`${API}/api/monitors`, { credentials: 'include' });
-      const monitors = await res.json();
-      topoData.nodes = monitors.map(m => ({
-        id: m.id,
-        name: m.name,
-        group: m.group_name || 'General',
-        status: 'pending',
-        x: 0,
-        y: 0
-      }));
+      const res = await fetch(`${API}/api/topology`, { credentials: 'include' });
+      topoData = await res.json();
     } catch(e) {
-      toast('Error loading monitors', 'error');
+      toast('Error loading services', 'error');
       return;
     }
   }
 
   const selA = document.getElementById('dep-monitor-id');
   const selB = document.getElementById('dep-depends-on');
-  const opts = topoData.nodes.map(n =>
-    `<option value="${n.id}">${esc(n.name)} (${esc(n.group)})</option>`
-  ).join('');
+  // Composite id (e.g. "server:7") is used directly as the option value —
+  // it already encodes the type, so saveDependency doesn't need to re-derive it.
+  const opts = topoData.nodes
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(n => `<option value="${esc(n.id)}">${TOPO_TYPE_ICON[n.node_type]||''} ${esc(n.name)} (${esc(n.group)})</option>`)
+    .join('');
   selA.innerHTML = '<option value="">Select service...</option>' + opts;
   selB.innerHTML = '<option value="">Select dependency...</option>' + opts;
   document.getElementById('dep-label').value = '';
@@ -2937,19 +3040,26 @@ async function openAddDependencyModal() {
 }
 
 async function saveDependency() {
-  const monitorId = document.getElementById('dep-monitor-id').value;
-  const dependsOn = document.getElementById('dep-depends-on').value;
+  const monitorCompositeId = document.getElementById('dep-monitor-id').value;
+  const dependsOnCompositeId = document.getElementById('dep-depends-on').value;
   const label     = document.getElementById('dep-label').value.trim();
 
-  if (!monitorId || !dependsOn) { toast('Select both services', 'error'); return; }
-  if (monitorId === dependsOn)  { toast('A service cannot depend on itself', 'error'); return; }
+  if (!monitorCompositeId || !dependsOnCompositeId) { toast('Select both services', 'error'); return; }
+  if (monitorCompositeId === dependsOnCompositeId)  { toast('A service cannot depend on itself', 'error'); return; }
+
+  const a = topoParseId(monitorCompositeId);
+  const b = topoParseId(dependsOnCompositeId);
 
   try {
     const res = await fetch(`${API}/api/topology/dependencies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ monitor_id: parseInt(monitorId), depends_on: parseInt(dependsOn), label })
+      body: JSON.stringify({
+        monitor_type: a.type, monitor_id: parseInt(a.rawId, 10),
+        depends_on_type: b.type, depends_on: parseInt(b.rawId, 10),
+        label
+      })
     });
     if (!res.ok) { const e = await res.json(); toast(e.error || 'Error', 'error'); return; }
     closeModal('modal-dependency');

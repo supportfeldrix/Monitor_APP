@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>CROIT Uptime Monitoring</title>
+<title>RST Uptime Monitoring</title>
 <link rel="icon" type="image/png" href="/logo/fnb-logo.png"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -371,7 +371,7 @@ canvas{max-width:100%}
       <div class="sp-logo-row">
         <img src="/logo/fnb-logo.png" alt="FNB Logo"/>
         <div class="sp-logo-text">
-          <div class="sp-brand">CROIT</div>
+          <div class="sp-brand">RST</div>
           <div class="sp-name">Uptime Monitoring</div>
         </div>
       </div>
@@ -387,7 +387,7 @@ canvas{max-width:100%}
       <div class="sp-logo-row">
         <img src="/logo/fnb-logo.png" alt="FNB Logo"/>
         <div class="sp-logo-text">
-          <div class="sp-brand">CROIT</div>
+          <div class="sp-brand">RST</div>
           <div class="sp-name">Database Status</div>
         </div>
       </div>
@@ -407,7 +407,7 @@ canvas{max-width:100%}
       <span style="margin-left:auto" id="db-status-updated"></span>
     </div>
     <div id="db-status-groups"></div>
-    <div class="sp-footer">Powered by CROIT Uptime Monitoring &nbsp;·&nbsp; Auto-refreshes every 60 seconds</div>
+    <div class="sp-footer">Powered by RST Uptime Monitoring &nbsp;·&nbsp; Auto-refreshes every 60 seconds</div>
   </div>
 </div>
         All Systems Operational
@@ -494,7 +494,7 @@ canvas{max-width:100%}
       </div>
     </div>
 
-    <div class="sp-footer">Powered by CROIT Uptime Monitoring &nbsp;&middot;&nbsp; Auto-refreshes every 60 seconds</div>
+    <div class="sp-footer">Powered by RST Uptime Monitoring &nbsp;&middot;&nbsp; Auto-refreshes every 60 seconds</div>
   </div>
 </div>
 
@@ -505,7 +505,7 @@ canvas{max-width:100%}
   <a class="sidebar-logo" href="#" onclick="navigate('dashboard');return false">
     <img src="/logo/fnb-logo.png" alt="FNB"/>
     <div class="logo-text">
-      <span class="logo-title">CROIT</span>
+      <span class="logo-title">RST</span>
       <span class="logo-sub">Uptime Monitoring</span>
     </div>
     <span class="version">v2.0</span>
@@ -748,7 +748,7 @@ canvas{max-width:100%}
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><h3><svg width="14" height="14" style="vertical-align:middle;margin-right:6px"><use href="#ic-info"/></svg>About</h3></div>
         <div class="card-body" style="color:var(--text2);font-size:13px;line-height:1.9">
-          <p><strong>CROIT Uptime Monitoring v2.0</strong></p>
+          <p><strong>RST Uptime Monitoring v2.0</strong></p>
           <p>Self-hosted monitoring with date/timeframe filtering on status pages.</p>
           <p style="margin-top:8px">HTTP/HTTPS &middot; TCP Port &middot; Keyword &middot; Status Pages &middot; Email Alerts &middot; Timeframe Filtering</p>
         </div>
@@ -811,6 +811,8 @@ canvas{max-width:100%}
         <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--red);display:inline-block"></span>Down</span>
         <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--text3);display:inline-block"></span>Paused</span>
         <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border-radius:50%;background:var(--yellow);display:inline-block"></span>Pending</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)"><span style="width:12px;height:12px;border:1.5px dashed #d97706;border-radius:50%;display:inline-block"></span>At Risk (host server unhealthy)</span>
+        <span style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text3)">📡 Monitor &nbsp;🗄 Database &nbsp;🖥 Server</span>
         <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="topo-stats"></span>
       </div>
 
@@ -1551,7 +1553,7 @@ canvas{max-width:100%}
       <button class="modal-close" onclick="closeModal('modal-dependency')">&times;</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Define that <strong>Service A</strong> depends on <strong>Service B</strong>. If B goes down, A is impacted.</p>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Define that <strong>Service A</strong> depends on <strong>Service B</strong>. If B goes down, A is impacted. Use this for cross-cutting relationships that can't be inferred automatically — e.g. "RCM depends on Keycloak for token introspection". You can pick a monitor, database, or server on either side.</p>
       <div class="form-group">
         <label>Service A (depends on →)</label>
         <select class="form-control" id="dep-monitor-id">
@@ -1568,6 +1570,7 @@ canvas{max-width:100%}
         <label>Label (optional)</label>
         <input class="form-control" id="dep-label" placeholder="e.g. Auth, API, Database"/>
       </div>
+      <div class="form-hint" style="margin-top:-6px">💡 Server → Monitor/Database "hosts" links are already shown automatically from Server Inventory — you don't need to add those here.</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-dependency')">Cancel</button>
